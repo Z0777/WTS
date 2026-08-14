@@ -1,0 +1,531 @@
+<meta charset="utf-8">
+<title>BTI Guatemala — Distribución de agua</title>
+<style>
+:root{
+  --ink:#0d1b26; --ink2:#2a4155; --mut:#6c8496; --line:#dbe5eb;
+  --bg:#f2f6f8; --card:#ffffff;
+  --a1:#0b6e8f; --a2:#28a1a8; --a3:#7fc8a9; --a4:#f0a442; --a5:#d1495b; --a6:#5b7fa6;
+  --grid:#e8eff3;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font:14px/1.45 "Segoe UI",Roboto,-apple-system,Helvetica,Arial,sans-serif}
+.num{font-family:"JetBrains Mono",Consolas,"SF Mono",ui-monospace,monospace;font-variant-numeric:tabular-nums}
+#app{display:flex;min-height:100vh}
+
+/* ---------- sidebar ---------- */
+aside{width:212px;flex:0 0 212px;background:var(--ink);color:#c9dae4;padding:18px 0;position:sticky;top:0;height:100vh}
+aside h1{font-size:13px;letter-spacing:.13em;text-transform:uppercase;margin:0 18px 2px;color:#fff;font-weight:600}
+aside .sub{font-size:11px;color:#6f8ea2;margin:0 18px 22px}
+nav a{display:block;padding:9px 18px;color:#a9c2d1;text-decoration:none;font-size:13px;border-left:3px solid transparent;cursor:pointer}
+nav a:hover{background:#152a38;color:#fff}
+nav a.on{background:#152a38;color:#fff;border-left-color:var(--a2)}
+nav a i{display:inline-block;width:22px;color:#4d7a90}
+aside .foot{position:absolute;bottom:14px;left:18px;right:18px;font-size:10.5px;color:#5c7d92}
+
+/* ---------- main ---------- */
+main{flex:1;min-width:0;padding:20px 24px 60px}
+.bar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:18px}
+.bar h2{margin:0;font-size:19px;font-weight:600}
+.bar .desc{color:var(--mut);font-size:12.5px;flex:1;min-width:220px}
+.seg{display:flex;background:#fff;border:1px solid var(--line);border-radius:7px;overflow:hidden}
+.seg button{border:0;background:none;padding:7px 13px;font-size:12.5px;cursor:pointer;color:var(--ink2);border-right:1px solid var(--line)}
+.seg button:last-child{border-right:0}
+.seg button.on{background:var(--a1);color:#fff}
+
+.grid{display:grid;gap:14px}
+.g4{grid-template-columns:repeat(4,1fr)}
+.g3{grid-template-columns:repeat(3,1fr)}
+.g2{grid-template-columns:repeat(2,1fr)}
+.g23{grid-template-columns:2fr 1fr}
+.g32{grid-template-columns:1fr 2fr}
+@media(max-width:1150px){.g4{grid-template-columns:repeat(2,1fr)}.g3,.g2,.g23,.g32{grid-template-columns:1fr}}
+
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+.card h3{margin:0 0 2px;font-size:13px;font-weight:600}
+.card .hint{color:var(--mut);font-size:11.5px;margin:0 0 10px}
+.kpi .lab{font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--mut)}
+.kpi .val{font-size:27px;font-weight:600;margin:5px 0 1px}
+.kpi .un{font-size:13px;color:var(--mut);font-weight:400}
+.kpi .dt{font-size:11.5px;color:var(--mut)}
+.tag{display:inline-block;padding:2px 7px;border-radius:20px;font-size:10.5px;font-weight:600}
+.ok{background:#e2f4ec;color:#1a7a56}.wr{background:#fdf0da;color:#96590a}.bd{background:#fbe4e7;color:#a32a3c}
+
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th{text-align:left;font-weight:600;color:var(--mut);font-size:11px;text-transform:uppercase;letter-spacing:.05em;
+   padding:6px 8px;border-bottom:1px solid var(--line);position:sticky;top:0;background:#fff}
+td{padding:6px 8px;border-bottom:1px solid #f0f5f8}
+td.r,th.r{text-align:right}
+tbody tr:hover{background:#f6fafc}
+.scroll{max-height:420px;overflow:auto}
+.note{background:#fff8e8;border:1px solid #f2dfb4;border-radius:8px;padding:11px 14px;font-size:12.5px;color:#6b4e11;margin-bottom:14px}
+.note b{color:#4a3608}
+.lgd{display:flex;gap:14px;flex-wrap:wrap;font-size:11.5px;color:var(--ink2);margin-top:8px}
+.lgd span{display:flex;align-items:center;gap:5px}
+.sw{width:11px;height:11px;border-radius:3px;display:inline-block}
+.page{display:none}.page.on{display:block}
+svg{display:block;width:100%;height:auto;overflow:visible}
+.ax{font-size:10.5px;fill:var(--mut)}
+.vl{font-size:10.5px;fill:var(--ink2);font-weight:600}
+</style>
+
+<div id="app">
+<aside>
+  <h1>Estación GT</h1>
+  <p class="sub">Distribución de agua · 2026</p>
+  <nav id="nav"></nav>
+  <div class="foot">Prototipo del tablero.<br>Contadores: datos reales.<br>Plantas: datos de ejemplo.</div>
+</aside>
+<main>
+  <div class="bar">
+    <div><h2 id="ttl"></h2><div class="desc" id="dsc"></div></div>
+    <div class="seg" id="mes"></div>
+  </div>
+  <div id="pages"></div>
+</main>
+</div>
+
+<script>
+const D = {"meta": {"filas_orig": 4388, "filas_dedup": 2214, "registros": 216, "anomalias": 12, "sets": 100, "invernaderos": 31}, "contador_mes": {"meses": ["2026-04", "2026-05", "2026-06", "2026-07"], "series": {"CONT01": [1693.0, 7128.9, 6521.9, 4556.2], "CONT02": [139.0, 952.0, null, null], "CONT03": [730.0, 3238.6, 2825.4, 1916.0], "CONT04": [851.0, 4246.0, 2896.0, null], "CONT05": [2063.0, 10184.1, 8179.3, 2145.6], "CONT06": [790.0, 2164.3, 1245.7, 900.0], "CONT07": [1380.0, 4389.3, 4208.7, 1392.0], "CONT08": [190.0, 1443.0, 1253.6, 629.4], "CONT09": [132.0, 536.4, 333.2, 205.4], "CONT10": [null, 30.6, 41.4, null], "CONT11": [228.0, 1084.0, 976.6, 538.4], "CONT12": [134.0, 370.9, 366.9, 231.2], "CONT13": [227.0, 420.7, 70.1, 57.2]}}, "equipos": [{"EQUIPO": "BOMB01", "DESCRIPCION": "Bombeo Principal", "SISTEMA": "A-Principal", "TIPOAGUA": "No Tratada", "CATEGORIA": "Produccion", "DISTRIBUCION": "RD", "ROL": "Fuente", "PADRE": NaN, "INCLUIR": false}, {"EQUIPO": "CONT01", "DESCRIPCION": "B.Principal", "SISTEMA": "A-Principal", "TIPOAGUA": "No Tratada", "CATEGORIA": "Produccion", "DISTRIBUCION": "Tanque 0", "ROL": "Produccion", "PADRE": "BOMB01", "INCLUIR": true}, {"EQUIPO": "CONT02", "DESCRIPCION": "B.Auxiliar", "SISTEMA": "A-Principal", "TIPOAGUA": "No Tratada", "CATEGORIA": "Produccion", "DISTRIBUCION": "Tanque 0", "ROL": "Produccion", "PADRE": "BOMB01", "INCLUIR": true}, {"EQUIPO": "CONT03", "DESCRIPCION": "Clarificador 1 Salida", "SISTEMA": "A-Principal", "TIPOAGUA": "Clarificada", "CATEGORIA": "Produccion", "DISTRIBUCION": "Tanque 0/1-3", "ROL": "Tratamiento", "PADRE": "CONT01", "INCLUIR": true}, {"EQUIPO": "CONT04", "DESCRIPCION": "Clarificador 2 Entrada", "SISTEMA": "A-Principal", "TIPOAGUA": "No Tratada", "CATEGORIA": "Produccion", "DISTRIBUCION": "Tanque 1-3", "ROL": "Tratamiento", "PADRE": "CONT01", "INCLUIR": true}, {"EQUIPO": "CONT05", "DESCRIPCION": "Clarificador 2 Salida", "SISTEMA": "A-Principal", "TIPOAGUA": "Clarificada", "CATEGORIA": "Produccion", "DISTRIBUCION": "Tanque 1-3", "ROL": "Tratamiento", "PADRE": "CONT04", "INCLUIR": true}, {"EQUIPO": "CONT06", "DESCRIPCION": "Salida CNP", "SISTEMA": "A-Principal", "TIPOAGUA": "Clarificada", "CATEGORIA": "Consumo", "DISTRIBUCION": "CNP", "ROL": "Distribucion", "PADRE": "CONT05", "INCLUIR": true}, {"EQUIPO": "CONT07", "DESCRIPCION": "Salida RD", "SISTEMA": "A-Principal", "TIPOAGUA": "Clarificada", "CATEGORIA": "Consumo", "DISTRIBUCION": "RD", "ROL": "Distribucion", "PADRE": "CONT05", "INCLUIR": true}, {"EQUIPO": "CONT08", "DESCRIPCION": "Agua de servicios", "SISTEMA": "A-Principal", "TIPOAGUA": "Clarificada", "CATEGORIA": "Consumo", "DISTRIBUCION": "Agua de servicios", "ROL": "Consumo final", "PADRE": "CONT05", "INCLUIR": true}, {"EQUIPO": "CONT09", "DESCRIPCION": "P. Mayores", "SISTEMA": "A-Principal", "TIPOAGUA": "Clarificada", "CATEGORIA": "Consumo", "DISTRIBUCION": "Procesos", "ROL": "Consumo final", "PADRE": "CONT07", "INCLUIR": true}, {"EQUIPO": "CONT10", "DESCRIPCION": "Pozo", "SISTEMA": "C-Pozo", "TIPOAGUA": "No Tratada", "CATEGORIA": "Produccion", "DISTRIBUCION": "Invernaderos", "ROL": "Fuente", "PADRE": NaN, "INCLUIR": true}, {"EQUIPO": "CONT11", "DESCRIPCION": "Presa Campo Abierto", "SISTEMA": "D-Campo abierto", "TIPOAGUA": "No Tratada", "CATEGORIA": "Produccion", "DISTRIBUCION": "Campo Abierto", "ROL": "Fuente", "PADRE": NaN, "INCLUIR": true}, {"EQUIPO": "CONT12", "DESCRIPCION": "Campo Abierto", "SISTEMA": "D-Campo abierto", "TIPOAGUA": "No Tratada", "CATEGORIA": "Consumo", "DISTRIBUCION": "Campo Abierto", "ROL": "Consumo final", "PADRE": "CONT11", "INCLUIR": true}, {"EQUIPO": "CONT13", "DESCRIPCION": "Areas Verdes Sustituto", "SISTEMA": "E-Areas Verdes", "TIPOAGUA": "No Tratada", "CATEGORIA": "Consumo", "DISTRIBUCION": "Oficinas", "ROL": "Consumo final", "PADRE": NaN, "INCLUIR": true}], "contador_dia": {"fechas": ["2026-04-23", "2026-04-24", "2026-04-25", "2026-04-26", "2026-04-27", "2026-04-28", "2026-04-29", "2026-04-30", "2026-05-01", "2026-05-02", "2026-05-03", "2026-05-04", "2026-05-05", "2026-05-06", "2026-05-07", "2026-05-08", "2026-05-09", "2026-05-10", "2026-05-11", "2026-05-12", "2026-05-13", "2026-05-14", "2026-05-15", "2026-05-16", "2026-05-17", "2026-05-18", "2026-05-19", "2026-05-20", "2026-05-21", "2026-05-22", "2026-05-23", "2026-05-24", "2026-05-25", "2026-05-26", "2026-05-27", "2026-05-28", "2026-05-29", "2026-05-30", "2026-05-31", "2026-06-01", "2026-06-02", "2026-06-03", "2026-06-04", "2026-06-05", "2026-06-06", "2026-06-07", "2026-06-08", "2026-06-09", "2026-06-10", "2026-06-11", "2026-06-12", "2026-06-13", "2026-06-14", "2026-06-15", "2026-06-16", "2026-06-17", "2026-06-18", "2026-06-19", "2026-06-20", "2026-06-21", "2026-06-22", "2026-06-23", "2026-06-24", "2026-06-25", "2026-06-26", "2026-06-27", "2026-06-28", "2026-06-29", "2026-06-30", "2026-07-01", "2026-07-02", "2026-07-03", "2026-07-04", "2026-07-05", "2026-07-06", "2026-07-07", "2026-07-08", "2026-07-09", "2026-07-10", "2026-07-11", "2026-07-12", "2026-07-13", "2026-07-14", "2026-07-15", "2026-07-16", "2026-07-17", "2026-07-18", "2026-07-19", "2026-07-20"], "series": {"CONT07": [280.0, 30.0, 30.0, 255.0, 255.0, 176.7, 176.7, 176.7, 140.0, 140.0, 140.0, 140.0, 155.7, 155.7, 155.7, 155.7, 155.7, 155.7, 155.7, 135.7, 135.7, 135.7, 135.7, 135.7, 135.7, 135.7, 277.2, 127.2, 127.2, 127.2, 127.2, 127.2, 127.2, 127.2, 127.2, 127.2, 127.2, 120.1, 120.1, 120.1, 120.1, 120.1, 120.1, 120.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 487.5, 487.5, 487.5, 487.5, 150.0, 150.0, 150.0, 150.0, 150.0, 150.0, 150.0, 152.0, 152.0, 152.0, 152.0, 152.0, 152.0, 152.0, 152.0, 152.0, 152.0, 34.3, 34.3, 34.3, 34.3, 34.3, 34.3, 34.3, 34.3, 34.3, 34.3, 34.3, 34.3, 34.3, 34.3], "CONT06": [130.0, 15.0, 15.0, 210.0, 210.0, 70.0, 70.0, 70.0, 100.0, 100.0, 100.0, 100.0, 107.1, 107.1, 107.1, 107.1, 107.1, 107.1, 107.1, 5.7, 5.7, 5.7, 5.7, 5.7, 5.7, 5.7, 405.0, 45.0, 45.0, 45.0, 48.6, 48.6, 48.6, 48.6, 48.6, 48.6, 48.6, 47.1, 47.1, 47.1, 47.1, 47.1, 47.1, 47.1, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 117.5, 117.5, 117.5, 117.5, 45.7, 45.7, 45.7, 45.7, 45.7, 45.7, 45.7, 55.0, 55.0, 55.0, 55.0, 55.0, 55.0, 55.0, 55.0, 55.0, 55.0, 40.7, 40.7, 40.7, 40.7, 40.7, 40.7, 40.7, 40.7, 40.7, 40.7, 40.7, 40.7, 40.7, 40.7], "CONT08": [0.0, 5.0, 5.0, 43.5, 43.5, 31.0, 31.0, 31.0, 17.5, 17.5, 17.5, 17.5, 63.4, 63.4, 63.4, 63.4, 63.4, 63.4, 63.4, 56.4, 56.4, 56.4, 56.4, 56.4, 56.4, 56.4, 94.0, 50.0, 50.0, 50.0, 30.6, 30.6, 30.6, 30.6, 30.6, 30.6, 30.6, 38.0, 38.0, 38.0, 38.0, 38.0, 38.0, 38.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 135.5, 135.5, 135.5, 135.5, 48.6, 48.6, 48.6, 48.6, 48.6, 48.6, 48.6, 45.4, 45.4, 45.4, 45.4, 45.4, 45.4, 45.4, 45.4, 45.4, 45.4, 25.5, 25.5, 25.5, 25.5, 25.5, 25.5, 25.5, 25.5, 25.5, 25.5, 25.5, 25.5, 25.5, 25.5], "CONT09": [0.0, 4.5, 4.5, 17.0, 17.0, 29.7, 29.7, 29.7, 6.8, 6.8, 6.8, 6.8, 4.1, 4.1, 4.1, 4.1, 4.1, 4.1, 4.1, 18.9, 18.9, 18.9, 18.9, 18.9, 18.9, 18.9, 159.5, 24.5, 24.5, 24.5, 12.9, 12.9, 12.9, 12.9, 12.9, 12.9, 12.9, 12.7, 12.7, 12.7, 12.7, 12.7, 12.7, 12.7, 11.6, 11.6, 11.6, 11.6, 11.6, 11.6, 11.6, 11.6, 11.6, 11.6, 14.5, 14.5, 14.5, 14.5, 9.4, 9.4, 9.4, 9.4, 9.4, 9.4, 9.4, 7.4, 7.4, 7.4, 7.4, 7.4, 7.4, 7.4, 7.4, 7.4, 7.4, 11.5, 11.5, 11.5, 11.5, 11.5, 11.5, 11.5, 11.5, 11.5, 11.5, 11.5, 11.5, 11.5, 11.5], "CONT12": [0.0, 9.0, 9.0, 49.5, 49.5, 5.7, 5.7, 5.7, 11.0, 11.0, 11.0, 11.0, 17.0, 17.0, 17.0, 17.0, 17.0, 17.0, 17.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 44.2, 44.2, 44.2, 44.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 15.4, 15.4, 15.4, 15.4, 15.4, 15.4, 15.4, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 32.5, 32.5, 32.5, 32.5, 14.1, 14.1, 14.1, 14.1, 14.1, 14.1, 14.1, 15.2, 15.2, 15.2, 15.2, 15.2, 15.2, 15.2, 15.2, 15.2, 15.2, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0], "CONT13": [0.0, 29.5, 29.5, 84.0, 84.0, 0.0, 0.0, 0.0, 0.5, 0.5, 0.5, 0.5, 4.4, 4.4, 4.4, 4.4, 4.4, 4.4, 4.4, 18.4, 18.4, 18.4, 18.4, 18.4, 18.4, 18.4, 30.8, 30.8, 30.8, 30.8, 18.9, 18.9, 18.9, 18.9, 18.9, 18.9, 18.9, 1.9, 1.9, 1.9, 1.9, 1.9, 1.9, 1.9, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 1.5, 2.0, 2.0, 2.0, 2.0, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 9.2, 9.2, 9.2, 9.2, 9.2, 9.2, 9.2, 9.2, 9.2, 9.2, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]}}, "riego_mes": {"meses": ["2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06", "2026-07", "2026-08"], "RD": [352.0, 932.2, 1605.2, 1464.6, 1097.2, 1159.7, 1875.2, 420.2], "CNP": [51.9, 165.5, 341.0, 319.2, 105.4, 171.1, 460.1, 63.7]}, "reparto": [{"mes": "2026-04", "dias": 8, "salida": 1380.0, "invernaderos": 276.5, "pmayores": 132.0, "otras": 971.5, "cnp_salida": 790.0, "cnp_inv": 62.3, "cnp_otras": 727.7}, {"mes": "2026-05", "dias": 31, "salida": 4389.3, "invernaderos": 1097.2, "pmayores": 536.4, "otras": 2755.6, "cnp_salida": 2164.3, "cnp_inv": 105.4, "cnp_otras": 2058.9}, {"mes": "2026-06", "dias": 30, "salida": 4208.7, "invernaderos": 1159.7, "pmayores": 333.2, "otras": 2715.8, "cnp_salida": 1245.7, "cnp_inv": 171.1, "cnp_otras": 1074.6}, {"mes": "2026-07", "dias": 20, "salida": 1392.0, "invernaderos": 1198.7, "pmayores": 205.4, "otras": 0, "cnp_salida": 900.0, "cnp_inv": 271.1, "cnp_otras": 628.9}], "detalle_inv": {"2026-04": [{"inv": "3B", "sitio": "RD", "crop": "Cucumber", "m3": 261.6, "plantas": 1610, "ml": 1677.0, "cob": 0.67, "lpd": 5.42}, {"inv": "10", "sitio": "RD", "crop": "Tomato", "m3": 237.7, "plantas": 3160, "ml": 1553.0, "cob": 0.77, "lpd": 2.51}, {"inv": "17", "sitio": "RD", "crop": "Tomato", "m3": 144.4, "plantas": 2050, "ml": 1458.0, "cob": 0.63, "lpd": 2.35}, {"inv": "6", "sitio": "RD", "crop": "Pepper", "m3": 134.8, "plantas": 2980, "ml": 1170.0, "cob": 0.58, "lpd": 1.89}, {"inv": "20", "sitio": "RD", "crop": "Melon", "m3": 126.2, "plantas": 2940, "ml": 1902.0, "cob": 0.57, "lpd": 3.07}, {"inv": "P5", "sitio": "CNP", "crop": "Melon", "m3": 114.9, "plantas": 1430, "ml": 1850.0, "cob": 0.44, "lpd": 2.98}, {"inv": "2", "sitio": "RD", "crop": "Watermelon", "m3": 111.5, "plantas": 2600, "ml": 1155.0, "cob": 0.52, "lpd": 1.87}, {"inv": "19", "sitio": "RD", "crop": "Tomato", "m3": 97.9, "plantas": 2140, "ml": 1351.0, "cob": 0.62, "lpd": 2.18}, {"inv": "12", "sitio": "RD", "crop": "Pepper", "m3": 82.9, "plantas": 2480, "ml": 690.0, "cob": 0.47, "lpd": 1.11}, {"inv": "8", "sitio": "RD", "crop": "Tomato", "m3": 82.5, "plantas": 2450, "ml": 696.0, "cob": 0.8, "lpd": 1.12}, {"inv": "P3", "sitio": "CNP", "crop": "Tomato", "m3": 76.8, "plantas": 1400, "ml": 1172.0, "cob": 0.5, "lpd": 1.83}, {"inv": "18", "sitio": "RD", "crop": "Pepper", "m3": 61.2, "plantas": 1860, "ml": 1456.0, "cob": 0.36, "lpd": 2.35}, {"inv": "P4", "sitio": "CNP", "crop": "Cucumber", "m3": 58.9, "plantas": 740, "ml": 1817.0, "cob": 0.44, "lpd": 2.95}, {"inv": "15", "sitio": "RD", "crop": "Pepper", "m3": 54.9, "plantas": 1610, "ml": 812.0, "cob": 0.65, "lpd": 1.31}, {"inv": "21", "sitio": "RD", "crop": "Pepper", "m3": 42.3, "plantas": 3470, "ml": 302.0, "cob": 0.48, "lpd": 0.49}, {"inv": "P1", "sitio": "CNP", "crop": "Tomato", "m3": 31.0, "plantas": 590, "ml": 1125.0, "cob": 0.5, "lpd": 1.75}, {"inv": "N8", "sitio": "CNP", "crop": "Tomato", "m3": 27.3, "plantas": 530, "ml": 1109.0, "cob": 0.43, "lpd": 1.72}, {"inv": "9", "sitio": "RD", "crop": "Tomato", "m3": 21.7, "plantas": 2140, "ml": 525.0, "cob": 0.14, "lpd": 0.73}, {"inv": "P2", "sitio": "CNP", "crop": "Pepper", "m3": 6.8, "plantas": 1240, "ml": 676.0, "cob": 0.2, "lpd": 1.09}, {"inv": "3A", "sitio": "RD", "crop": "Tomato", "m3": 5.2, "plantas": 2940, "ml": 272.0, "cob": 0.75, "lpd": 0.44}, {"inv": "N2", "sitio": "CNP", "crop": "Pepper", "m3": 2.4, "plantas": 590, "ml": 500.0, "cob": 0.2, "lpd": 0.81}, {"inv": "N1", "sitio": "CNP", "crop": "Tomato", "m3": 1.1, "plantas": 780, "ml": 225.0, "cob": 0.5, "lpd": 0.36}], "2026-05": [{"inv": "3A", "sitio": "RD", "crop": "Tomato", "m3": 233.0, "plantas": 2940, "ml": 1585.0, "cob": 0.84, "lpd": 2.56}, {"inv": "10", "sitio": "RD", "crop": "Tomato", "m3": 226.6, "plantas": 3160, "ml": 1433.0, "cob": 0.94, "lpd": 2.31}, {"inv": "21", "sitio": "RD", "crop": "Pepper", "m3": 186.8, "plantas": 3470, "ml": 1076.0, "cob": 0.55, "lpd": 1.74}, {"inv": "8", "sitio": "RD", "crop": "Tomato", "m3": 158.6, "plantas": 2450, "ml": 1295.0, "cob": 0.94, "lpd": 2.09}, {"inv": "12", "sitio": "RD", "crop": "Pepper", "m3": 98.1, "plantas": 2480, "ml": 817.0, "cob": 0.5, "lpd": 1.32}, {"inv": "3B", "sitio": "RD", "crop": "Cucumber", "m3": 92.0, "plantas": 1610, "ml": 1609.0, "cob": 0.73, "lpd": 4.76}, {"inv": "7", "sitio": "RD", "crop": "Tomato", "m3": 45.0, "plantas": 1400, "ml": 765.0, "cob": 0.92, "lpd": 1.23}, {"inv": "13", "sitio": "RD", "crop": "Tomato", "m3": 35.4, "plantas": 2420, "ml": 477.0, "cob": 0.84, "lpd": 0.77}, {"inv": "P6", "sitio": "CNP", "crop": "Tomato", "m3": 31.5, "plantas": 1640, "ml": 475.0, "cob": 0.64, "lpd": 0.77}, {"inv": "P3", "sitio": "CNP", "crop": "Tomato", "m3": 31.1, "plantas": 1400, "ml": 1252.0, "cob": 0.27, "lpd": 2.02}, {"inv": "N1", "sitio": "CNP", "crop": "Tomato", "m3": 26.0, "plantas": 780, "ml": 665.0, "cob": 0.55, "lpd": 1.07}, {"inv": "17", "sitio": "RD", "crop": "Tomato", "m3": 12.2, "plantas": 2050, "ml": 1233.0, "cob": 1.0, "lpd": 1.99}, {"inv": "11", "sitio": "RD", "crop": "Pepper", "m3": 9.1, "plantas": 2510, "ml": 112.0, "cob": 0.4, "lpd": 0.18}, {"inv": "N8", "sitio": "CNP", "crop": "Tomato", "m3": 8.0, "plantas": 530, "ml": 1175.0, "cob": 0.25, "lpd": 1.88}, {"inv": "P1", "sitio": "CNP", "crop": "Tomato", "m3": 7.7, "plantas": 590, "ml": 1350.0, "cob": 0.17, "lpd": 2.17}, {"inv": "P2", "sitio": "CNP", "crop": "Pepper", "m3": 0.8, "plantas": 1640, "ml": 100.0, "cob": 0.33, "lpd": 0.16}, {"inv": "22", "sitio": "RD", "crop": "Melon", "m3": 0.5, "plantas": 2320, "ml": 140.0, "cob": 1.0, "lpd": 0.23}, {"inv": "N2", "sitio": "CNP", "crop": "Pepper", "m3": 0.3, "plantas": 650, "ml": 100.0, "cob": 0.67, "lpd": 0.16}], "2026-06": [{"inv": "3A", "sitio": "RD", "crop": "Tomato", "m3": 251.5, "plantas": 2940, "ml": 1768.0, "cob": 0.77, "lpd": 2.85}, {"inv": "21", "sitio": "RD", "crop": "Pepper", "m3": 185.5, "plantas": 3470, "ml": 1104.0, "cob": 0.47, "lpd": 1.78}, {"inv": "8", "sitio": "RD", "crop": "Tomato", "m3": 146.0, "plantas": 2450, "ml": 1232.0, "cob": 0.5, "lpd": 1.99}, {"inv": "22", "sitio": "RD", "crop": "Melon", "m3": 138.6, "plantas": 2320, "ml": 1236.0, "cob": 0.77, "lpd": 1.99}, {"inv": "13", "sitio": "RD", "crop": "Tomato", "m3": 134.9, "plantas": 2420, "ml": 1153.0, "cob": 0.83, "lpd": 1.86}, {"inv": "P6", "sitio": "CNP", "crop": "Tomato", "m3": 97.0, "plantas": 1640, "ml": 1220.0, "cob": 0.33, "lpd": 1.97}, {"inv": "7", "sitio": "RD", "crop": "Tomato", "m3": 91.1, "plantas": 1400, "ml": 1344.0, "cob": 0.8, "lpd": 2.17}, {"inv": "11", "sitio": "RD", "crop": "Pepper", "m3": 76.9, "plantas": 2510, "ml": 633.0, "cob": 0.47, "lpd": 1.02}, {"inv": "9", "sitio": "RD", "crop": "Tomato", "m3": 48.5, "plantas": 2360, "ml": 638.0, "cob": 0.9, "lpd": 1.03}, {"inv": "N1", "sitio": "CNP", "crop": "Tomato", "m3": 48.4, "plantas": 780, "ml": 1281.0, "cob": 0.47, "lpd": 2.07}, {"inv": "2", "sitio": "RD", "crop": "Watermelon", "m3": 48.1, "plantas": 2390, "ml": 735.0, "cob": 0.82, "lpd": 1.18}, {"inv": "4", "sitio": "RD", "crop": "Cucumber", "m3": 18.5, "plantas": 2820, "ml": 312.0, "cob": 0.23, "lpd": 0.5}, {"inv": "P2", "sitio": "CNP", "crop": "Pepper", "m3": 14.5, "plantas": 1640, "ml": 228.0, "cob": 0.13, "lpd": 0.3}, {"inv": "1", "sitio": "RD", "crop": "Cucumber", "m3": 11.6, "plantas": 3320, "ml": 236.0, "cob": 0.8, "lpd": 0.39}, {"inv": "N2", "sitio": "CNP", "crop": "Pepper", "m3": 11.1, "plantas": 650, "ml": 353.0, "cob": 0.33, "lpd": 0.57}, {"inv": "5", "sitio": "RD", "crop": "Cucumber", "m3": 8.6, "plantas": 2050, "ml": 1300.0, "cob": 0.5, "lpd": 2.09}], "2026-07": [{"inv": "1", "sitio": "RD", "crop": "Cucumber", "m3": 295.1, "plantas": 3320, "ml": 1271.0, "cob": 0.83, "lpd": 2.87}, {"inv": "4", "sitio": "RD", "crop": "Cucumber", "m3": 285.8, "plantas": 2820, "ml": 2026.0, "cob": 0.87, "lpd": 3.27}, {"inv": "2", "sitio": "RD", "crop": "Watermelon", "m3": 234.1, "plantas": 2390, "ml": 1962.0, "cob": 0.84, "lpd": 3.16}, {"inv": "6", "sitio": "RD", "crop": "Cucumber", "m3": 205.0, "plantas": 3350, "ml": 1224.0, "cob": 0.84, "lpd": 1.97}, {"inv": "22", "sitio": "RD", "crop": "Melon", "m3": 169.2, "plantas": 2320, "ml": 1740.0, "cob": 0.69, "lpd": 2.81}, {"inv": "5", "sitio": "RD", "crop": "Cucumber", "m3": 162.2, "plantas": 2050, "ml": 1586.0, "cob": 0.55, "lpd": 2.55}, {"inv": "9", "sitio": "RD", "crop": "Tomato", "m3": 147.1, "plantas": 2360, "ml": 1249.0, "cob": 0.77, "lpd": 2.01}, {"inv": "13", "sitio": "RD", "crop": "Tomato", "m3": 117.4, "plantas": 2420, "ml": 1368.0, "cob": 0.77, "lpd": 2.2}, {"inv": "P6", "sitio": "CNP", "crop": "Tomato", "m3": 102.7, "plantas": 1640, "ml": 1250.0, "cob": 0.52, "lpd": 2.02}, {"inv": "11", "sitio": "RD", "crop": "Pepper", "m3": 92.1, "plantas": 2510, "ml": 734.0, "cob": 0.29, "lpd": 1.18}, {"inv": "P2", "sitio": "CNP", "crop": "Pepper", "m3": 75.4, "plantas": 1640, "ml": 918.0, "cob": 0.42, "lpd": 1.48}, {"inv": "P5", "sitio": "CNP", "crop": "Cucumber", "m3": 70.2, "plantas": 1120, "ml": 1444.0, "cob": 0.33, "lpd": 2.32}, {"inv": "P3", "sitio": "CNP", "crop": "Tomato", "m3": 68.2, "plantas": 1640, "ml": 919.0, "cob": 0.54, "lpd": 1.48}, {"inv": "17", "sitio": "RD", "crop": "Tomato", "m3": 64.1, "plantas": 1890, "ml": 778.0, "cob": 0.74, "lpd": 1.26}, {"inv": "P4", "sitio": "CNP", "crop": "Melon", "m3": 42.8, "plantas": 780, "ml": 1258.0, "cob": 0.3, "lpd": 2.03}, {"inv": "N9", "sitio": "CNP", "crop": "Tomato", "m3": 37.2, "plantas": 810, "ml": 1023.0, "cob": 0.5, "lpd": 1.64}, {"inv": "7", "sitio": "RD", "crop": "Tomato", "m3": 36.5, "plantas": 1400, "ml": 1154.0, "cob": 0.57, "lpd": 1.86}, {"inv": "N1", "sitio": "CNP", "crop": "Tomato", "m3": 34.0, "plantas": 780, "ml": 1037.0, "cob": 0.46, "lpd": 1.67}, {"inv": "18", "sitio": "RD", "crop": "Pepper", "m3": 31.0, "plantas": 1830, "ml": 363.0, "cob": 0.24, "lpd": 0.58}, {"inv": "N2", "sitio": "CNP", "crop": "Pepper", "m3": 29.7, "plantas": 650, "ml": 911.0, "cob": 0.39, "lpd": 1.47}, {"inv": "3A", "sitio": "RD", "crop": "Tomato", "m3": 21.0, "plantas": 2940, "ml": 884.0, "cob": 0.4, "lpd": 1.43}, {"inv": "21", "sitio": "RD", "crop": "Pepper", "m3": 14.6, "plantas": 3470, "ml": 1300.0, "cob": 0.5, "lpd": 2.1}]}, "heatmap": {"semanas": ["2026-S17", "2026-S18", "2026-S19", "2026-S20", "2026-S21", "2026-S22", "2026-S23", "2026-S24", "2026-S25", "2026-S26", "2026-S27", "2026-S28", "2026-S29", "2026-S30", "2026-S31", "2026-S32"], "invernaderos": ["1", "10", "11", "12", "13", "15", "17", "18", "19", "2", "20", "21", "22", "3A", "3B", "4", "5", "6", "7", "8", "9", "N1", "N2", "N8", "N9", "P1", "P2", "P3", "P4", "P5", "P6"], "valores": [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 5.4, 34.1, 79.7, 64.8, 64.6, 84.0, 57.1], [62.7, 56.7, 58.3, 53.0, 45.3, 42.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 2.4, 3.2, 3.5, 9.4, 13.9, 22.8, 24.3, 22.7, 21.1, 21.7, 19.0, 20.0, 6.1], [23.4, 22.4, 21.9, 25.1, 22.0, 19.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 4.1, 10.7, 20.5, 22.8, 26.1, 36.9, 38.1, 37.6, 37.6, 36.7, 16.4, 0.0, 0.0], [14.9, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [26.0, 26.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.7, 3.5, 9.7, 30.6, 27.3, 23.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.9, 4.7, 6.3, 7.8, 14.9, 7.1], [9.7, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [9.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 7.6, 29.4, 39.3, 53.8, 54.5, 56.1, 57.2, 42.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [17.7, 19.2, 38.6, 41.7, 43.4, 51.3, 54.0, 38.2, 28.0, 51.8, 28.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.5, 6.3, 16.4, 52.2, 49.9, 55.0, 54.2, 47.3, 26.6, 0.0, 0.0], [0.0, 10.9, 31.3, 64.9, 70.9, 60.2, 69.3, 74.1, 47.9, 45.0, 36.1, 0.0, 0.0, 0.0, 0.0, 0.0], [47.4, 73.6, 55.1, 7.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.5, 10.0, 43.6, 70.4, 74.6, 60.4, 57.7, 41.6], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 26.0, 29.6, 39.6, 44.2, 45.2, 31.7], [22.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8.1, 22.8, 40.2, 67.3, 91.4, 52.6], [0.0, 0.0, 1.8, 8.0, 15.9, 19.3, 20.0, 24.3, 20.7, 19.8, 17.6, 20.2, 5.0, 0.0, 0.0, 0.0], [32.5, 32.0, 31.8, 41.1, 36.9, 35.0, 28.4, 34.0, 40.3, 33.9, 9.2, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.9, 22.2, 19.1, 25.7, 30.0, 32.7, 36.9, 35.7, 35.6], [0.0, 2.1, 2.5, 7.1, 6.5, 9.0, 10.6, 10.6, 10.9, 12.6, 11.9, 10.4, 8.8, 6.6, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.3, 0.7, 0.7, 3.5, 4.9, 5.5, 6.5, 6.4, 6.5, 8.5, 4.6], [6.5, 6.2, 5.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 5.3, 9.1, 13.5, 12.7, 12.1], [7.9, 9.0, 3.8, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0, 0.8, 1.4, 1.5, 1.1, 7.2, 14.7, 14.5, 15.5, 16.7, 24.0, 2.6], [17.3, 17.7, 21.0, 2.4, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.5, 9.3, 15.6, 20.4, 30.3, 4.5], [12.0, 1.3, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.3, 11.5, 9.3, 12.0, 11.2, 1.3], [28.2, 3.9, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.3, 23.2, 13.5, 16.3, 18.0, 2.1], [0.0, 0.0, 2.5, 5.7, 8.2, 15.1, 17.5, 22.3, 25.5, 24.6, 24.5, 27.2, 22.3, 21.5, 19.4, 2.5]]}, "etapa": {"etapas": ["Vegetativa", "Polinizacion", "Llenado de fruto", "Cosecha", "Post-cosecha"], "series": {"Cucumber": [1.2, 2.0, 1.67, 0.0, 0.0], "Melon": [0.96, 2.07, 1.74, 0.0, 0.0], "Pepper": [0.43, 0.8, 0.95, 1.0, 0.0], "Tomato": [0.93, 1.34, 1.34, 1.13, 0.0], "Watermelon": [1.19, 1.73, 1.39, 0.0, 0.0]}}, "curva": {"Cucumber": [[0, 0.49], [5, 0.68], [10, 0.96], [15, 1.53], [20, 1.83], [25, 1.96], [30, 2.04], [35, 1.98], [40, 1.95], [45, 1.77], [50, 1.59], [55, 1.41], [60, 2.02], [65, 1.76], [70, 1.34]], "Melon": [[0, 0.24], [5, 0.4], [10, 0.58], [15, 1.3], [20, 1.63], [25, 1.63], [30, 2.03], [35, 2.1], [40, 2.02], [45, 1.68], [50, 1.45], [55, 1.89], [60, 1.7]], "Pepper": [[0, 0.34], [5, 0.38], [10, 0.37], [15, 0.47], [20, 0.58], [25, 0.63], [30, 0.8], [35, 0.87], [40, 0.94], [45, 0.86], [50, 0.97], [55, 1.05], [60, 1.06], [65, 0.96], [70, 0.86], [75, 0.9], [80, 1.08], [85, 1.04]], "Tomato": [[0, 0.53], [5, 0.73], [10, 0.85], [15, 1.08], [20, 1.2], [25, 1.27], [30, 1.29], [35, 1.4], [40, 1.45], [45, 1.4], [50, 1.35], [55, 1.3], [60, 1.28], [65, 1.21], [70, 1.37], [75, 1.31], [80, 1.09], [85, 1.14], [90, 1.22]], "Watermelon": [[0, 0.56], [5, 0.79], [10, 1.26], [15, 1.22], [20, 1.72], [25, 1.59], [30, 1.75], [35, 1.95], [40, 1.48], [45, 1.56], [50, 1.28], [55, 1.12]]}, "anomalias": [{"equipo": "CONT01", "fecha": "2026-04-22", "ant": 0.0, "act": 307215.0, "m3": 0.0, "motivo": "Consumo fuera de rango"}, {"equipo": "CONT03", "fecha": "2026-04-22", "ant": 0.0, "act": 382590.0, "m3": 0.0, "motivo": "Consumo fuera de rango"}, {"equipo": "CONT04", "fecha": "2026-04-22", "ant": 0.0, "act": 76246.0, "m3": 0.0, "motivo": "Consumo fuera de rango"}, {"equipo": "CONT05", "fecha": "2026-04-22", "ant": 0.0, "act": 206212.0, "m3": 0.0, "motivo": "Consumo fuera de rango"}, {"equipo": "CONT07", "fecha": "2026-05-22", "ant": 271890.0, "act": 0.0, "m3": 0.0, "motivo": "Lectura actual en cero"}, {"equipo": "CONT08", "fecha": "2026-04-22", "ant": 0.0, "act": 48253.0, "m3": 0.0, "motivo": "Consumo fuera de rango"}, {"equipo": "CONT09", "fecha": "2026-04-22", "ant": 0.0, "act": 26441.0, "m3": 0.0, "motivo": "Consumo fuera de rango"}, {"equipo": "CONT10", "fecha": "2026-04-22", "ant": 0.0, "act": 8512.0, "m3": 0.0, "motivo": "CONSUMO_M3 no coincide"}, {"equipo": "CONT11", "fecha": "2026-04-22", "ant": 0.0, "act": 133938.0, "m3": 0.0, "motivo": "Consumo fuera de rango"}, {"equipo": "CONT12", "fecha": "2026-04-22", "ant": 0.0, "act": 69695.0, "m3": 0.0, "motivo": "Consumo fuera de rango"}, {"equipo": "CONT13", "fecha": "2026-04-22", "ant": 0.0, "act": 5236.0, "m3": 0.0, "motivo": "CONSUMO_M3 no coincide"}, {"equipo": "CONT07", "fecha": "2026-07-24", "ant": 276080.0, "act": 3274190.0, "m3": 2998110.0, "motivo": "Consumo fuera de rango"}], "cobertura": {"meses": ["2026-04", "2026-05", "2026-06", "2026-07"], "invernaderos": ["1", "10", "11", "12", "13", "15", "17", "18", "19", "2", "20", "21", "22", "3A", "3B", "4", "5", "6", "7", "8", "9", "N1", "N2", "N8", "N9", "P1", "P2", "P3", "P4", "P5", "P6"], "valores": [[null, null, 0.8, 0.83], [0.77, 0.94, null, null], [null, 0.4, 0.47, 0.29], [0.47, 0.5, null, null], [null, 0.84, 0.83, 0.77], [0.65, null, null, null], [0.63, 1.0, null, 0.74], [0.36, null, null, 0.24], [0.62, null, null, null], [0.52, null, 0.82, 0.84], [0.57, null, null, null], [0.48, 0.55, 0.47, 0.5], [null, 1.0, 0.77, 0.69], [0.75, 0.84, 0.77, 0.4], [0.67, 0.73, null, null], [null, null, 0.23, 0.87], [null, null, 0.5, 0.55], [0.58, null, null, 0.84], [null, 0.92, 0.8, 0.57], [0.8, 0.94, 0.5, null], [0.14, null, 0.9, 0.77], [0.5, 0.55, 0.47, 0.46], [0.2, 0.67, 0.33, 0.39], [0.43, 0.25, null, null], [null, null, null, 0.5], [0.5, 0.17, null, null], [0.2, 0.33, 0.13, 0.42], [0.5, 0.27, null, 0.54], [0.44, null, null, 0.3], [0.44, null, null, 0.33], [null, 0.64, 0.33, 0.52]]}, "periodos": [{"equipo": "CONT01", "dias": 7.9}, {"equipo": "CONT02", "dias": 5.3}, {"equipo": "CONT03", "dias": 7.9}, {"equipo": "CONT04", "dias": 6.3}, {"equipo": "CONT05", "dias": 6.8}, {"equipo": "CONT06", "dias": 7.6}, {"equipo": "CONT07", "dias": 8.3}, {"equipo": "CONT08", "dias": 7.7}, {"equipo": "CONT09", "dias": 7.9}, {"equipo": "CONT10", "dias": 7.2}, {"equipo": "CONT11", "dias": 8.1}, {"equipo": "CONT12", "dias": 7.9}, {"equipo": "CONT13", "dias": 8.2}], "kpi": {"produccion": 63165.0, "consumo": 23071.0, "salidaRD": 11370.0, "salidaCNP": 5100.0, "riego": 10584.0, "pmayores": 1207.0, "cobertura": 0.609, "plantas": 20100, "lpd": 1.09}, "balance": [{"sistema": "A-Principal", "categoria": "Produccion", "tipo": "Clarificada", "desc": "Clarificador 2 Salida", "m3": 22572.0}, {"sistema": "A-Principal", "categoria": "Produccion", "tipo": "No Tratada", "desc": "B.Principal", "m3": 19900.0}, {"sistema": "A-Principal", "categoria": "Consumo", "tipo": "Clarificada", "desc": "Salida RD", "m3": 11370.0}, {"sistema": "A-Principal", "categoria": "Produccion", "tipo": "Clarificada", "desc": "Clarificador 1 Salida", "m3": 8710.0}, {"sistema": "A-Principal", "categoria": "Produccion", "tipo": "No Tratada", "desc": "Clarificador 2 Entrada", "m3": 7993.0}, {"sistema": "A-Principal", "categoria": "Consumo", "tipo": "Clarificada", "desc": "Salida CNP", "m3": 5100.0}, {"sistema": "A-Principal", "categoria": "Consumo", "tipo": "Clarificada", "desc": "Agua de servicios", "m3": 3516.0}, {"sistema": "D-Campo abierto", "categoria": "Produccion", "tipo": "No Tratada", "desc": "Presa Campo Abierto", "m3": 2827.0}, {"sistema": "A-Principal", "categoria": "Consumo", "tipo": "Clarificada", "desc": "P. Mayores", "m3": 1207.0}, {"sistema": "D-Campo abierto", "categoria": "Consumo", "tipo": "No Tratada", "desc": "Campo Abierto", "m3": 1103.0}, {"sistema": "A-Principal", "categoria": "Produccion", "tipo": "No Tratada", "desc": "B.Auxiliar", "m3": 1091.0}, {"sistema": "E-Areas Verdes", "categoria": "Consumo", "tipo": "No Tratada", "desc": "Areas Verdes Sustituto", "m3": 775.0}, {"sistema": "C-Pozo", "categoria": "Produccion", "tipo": "No Tratada", "desc": "Pozo", "m3": 72.0}], "flujo": [{"origen": "BOMB01", "destino": "CONT01", "desc": "B.Principal", "m3": 19900.0}, {"origen": "BOMB01", "destino": "CONT02", "desc": "B.Auxiliar", "m3": 1091.0}, {"origen": "CONT01", "destino": "CONT03", "desc": "Clarificador 1 Salida", "m3": 8710.0}, {"origen": "CONT01", "destino": "CONT04", "desc": "Clarificador 2 Entrada", "m3": 7993.0}, {"origen": "CONT04", "destino": "CONT05", "desc": "Clarificador 2 Salida", "m3": 22572.0}, {"origen": "CONT05", "destino": "CONT06", "desc": "Salida CNP", "m3": 5100.0}, {"origen": "CONT05", "destino": "CONT07", "desc": "Salida RD", "m3": 11370.0}, {"origen": "CONT05", "destino": "CONT08", "desc": "Agua de servicios", "m3": 3516.0}, {"origen": "CONT07", "destino": "CONT09", "desc": "P. Mayores", "m3": 1207.0}, {"origen": "FUENTE", "destino": "CONT10", "desc": "Pozo", "m3": 72.0}, {"origen": "FUENTE", "destino": "CONT11", "desc": "Presa Campo Abierto", "m3": 2827.0}, {"origen": "CONT11", "destino": "CONT12", "desc": "Campo Abierto", "m3": 1103.0}, {"origen": "FUENTE", "destino": "CONT13", "desc": "Areas Verdes Sustituto", "m3": 775.0}]};
+const MESNOM = {"2026-04":"Abril","2026-05":"Mayo","2026-06":"Junio","2026-07":"Julio","TODO":"Todo"};
+let MES = "2026-06";
+
+/* ============================ helpers de SVG ============================ */
+const C = ["#0b6e8f","#28a1a8","#7fc8a9","#f0a442","#d1495b","#5b7fa6","#9b6bb3","#3f8f5e","#c96a2e","#4a6d8c"];
+const fmt=(v,d=0)=>v==null?"—":v.toLocaleString("es-GT",{minimumFractionDigits:d,maximumFractionDigits:d});
+const pct=(v,d=1)=>v==null?"—":(v*100).toFixed(d)+" %";
+const esc=s=>String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;");
+
+function svg(w,h,inner){return `<svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="xMidYMid meet">${inner}</svg>`}
+function ticks(max,n=4){const s=nice(max/n);const out=[];for(let v=0;v<=max*1.001;v+=s)out.push(v);return out}
+function nice(x){const e=Math.pow(10,Math.floor(Math.log10(x||1)));const f=x/e;
+  return (f<=1?1:f<=2?2:f<=2.5?2.5:f<=5?5:10)*e}
+
+/* barras horizontales */
+function hbar(items,{w=520,rh=22,unit="m³",color=null,max=null}={}){
+  const lw=90, pad=8, W=w, H=items.length*rh+16;
+  const mx = max ?? Math.max(...items.map(d=>d.v),1);
+  let s="";
+  items.forEach((d,i)=>{
+    const y=i*rh+8, bw=(W-lw-70)*(d.v/mx);
+    s+=`<text class="ax" x="${lw-6}" y="${y+rh/2+3}" text-anchor="end">${esc(d.k)}</text>`;
+    s+=`<rect x="${lw}" y="${y+3}" width="${Math.max(bw,1)}" height="${rh-9}" rx="2" fill="${d.c||color||C[i%C.length]}"/>`;
+    s+=`<text class="vl" x="${lw+bw+6}" y="${y+rh/2+3}">${fmt(d.v,d.v<10?2:0)}</text>`;
+  });
+  return svg(W,H,s);
+}
+
+/* columnas agrupadas o apiladas */
+function bars(cats,series,{w=560,h=230,stack=false,pct100=false,unit="m³"}={}){
+  const L=48,R=10,T=12,B=28, iw=w-L-R, ih=h-T-B;
+  let vals = pct100? cats.map((_,i)=>1) : (stack
+      ? cats.map((_,i)=>series.reduce((a,s)=>a+(s.v[i]||0),0))
+      : [Math.max(...series.flatMap(s=>s.v.filter(x=>x!=null)))]);
+  const mx = Math.max(...vals,1)*(pct100?1:1.12);
+  const y=v=>T+ih-ih*(v/mx);
+  let s=`<line x1="${L}" y1="${T+ih}" x2="${w-R}" y2="${T+ih}" stroke="var(--line)"/>`;
+  ticks(mx).forEach(t=>{s+=`<line x1="${L}" y1="${y(t)}" x2="${w-R}" y2="${y(t)}" stroke="var(--grid)"/>
+    <text class="ax" x="${L-6}" y="${y(t)+3}" text-anchor="end">${pct100?Math.round(t*100)+"%":fmt(t,mx<12?1:0)}</text>`});
+  const bw=iw/cats.length;
+  cats.forEach((c,i)=>{
+    const x0=L+i*bw;
+    if(stack){
+      const tot=series.reduce((a,s)=>a+(s.v[i]||0),0)||1; let acc=0;
+      series.forEach((se,j)=>{
+        const raw=se.v[i]||0, val=pct100?raw/tot:raw;
+        const hh=ih*(val/mx);
+        s+=`<rect x="${x0+bw*0.18}" y="${y(acc+val)}" width="${bw*0.64}" height="${Math.max(hh,0)}" fill="${se.c||C[j]}">
+            <title>${esc(se.n)} · ${esc(c)}: ${fmt(raw,0)} ${unit}</title></rect>`;
+        if(hh>15)s+=`<text class="vl" x="${x0+bw/2}" y="${y(acc+val/2)+4}" text-anchor="middle" fill="#fff">${pct100?Math.round(val*100)+"%":fmt(raw)}</text>`;
+        acc+=val;
+      });
+    }else{
+      const n=series.length, gw=bw*0.72/n;
+      series.forEach((se,j)=>{
+        const val=se.v[i]||0, hh=ih*(val/mx);
+        s+=`<rect x="${x0+bw*0.14+j*gw}" y="${y(val)}" width="${gw*0.86}" height="${Math.max(hh,0)}" rx="2" fill="${se.c||C[j]}">
+            <title>${esc(se.n)} · ${esc(c)}: ${fmt(val,2)} ${unit}</title></rect>`;
+        if(val>0)s+=`<text class="ax" x="${x0+bw*0.14+j*gw+gw*0.43}" y="${y(val)-4}" text-anchor="middle" font-size="9">${fmt(val,mx<12?2:0)}</text>`;
+      });
+    }
+    s+=`<text class="ax" x="${x0+bw/2}" y="${T+ih+16}" text-anchor="middle">${esc(c)}</text>`;
+  });
+  return svg(w,h,s);
+}
+
+/* área / líneas */
+function area(labels,series,{w=560,h=210,fill=true,xevery=null,unit="m³"}={}){
+  const L=46,R=12,T=10,B=26,iw=w-L-R,ih=h-T-B;
+  const mx=Math.max(...series.flatMap(s=>s.v),1)*1.12;
+  const X=i=>L+iw*(labels.length<2?0.5:i/(labels.length-1));
+  const Y=v=>T+ih-ih*(v/mx);
+  let s=`<line x1="${L}" y1="${T+ih}" x2="${w-R}" y2="${T+ih}" stroke="var(--line)"/>`;
+  ticks(mx).forEach(t=>{s+=`<line x1="${L}" y1="${Y(t)}" x2="${w-R}" y2="${Y(t)}" stroke="var(--grid)"/>
+    <text class="ax" x="${L-6}" y="${Y(t)+3}" text-anchor="end">${fmt(t,mx<12?1:0)}</text>`});
+  series.forEach((se,j)=>{
+    const pts=se.v.map((v,i)=>`${X(i)},${Y(v)}`).join(" ");
+    if(fill)s+=`<polygon points="${X(0)},${Y(0)} ${pts} ${X(se.v.length-1)},${Y(0)}" fill="${se.c||C[j]}" opacity=".16"/>`;
+    s+=`<polyline points="${pts}" fill="none" stroke="${se.c||C[j]}" stroke-width="2" stroke-linejoin="round"/>`;
+  });
+  const ev = xevery || Math.ceil(labels.length/8);
+  labels.forEach((l,i)=>{ if(i%ev===0) s+=`<text class="ax" x="${X(i)}" y="${T+ih+16}" text-anchor="middle">${esc(l)}</text>`});
+  return svg(w,h,s);
+}
+
+/* dona */
+function donut(items,{w=300,h=230,unit="m³"}={}){
+  const cx=w/2,cy=h/2,r=82,ir=50;
+  const tot=items.reduce((a,d)=>a+d.v,0)||1; let ang=-Math.PI/2, s="";
+  items.forEach((d,i)=>{
+    const a2=ang+2*Math.PI*(d.v/tot);
+    const p=(a,rr)=>[cx+rr*Math.cos(a),cy+rr*Math.sin(a)];
+    const [x1,y1]=p(ang,r),[x2,y2]=p(a2,r),[x3,y3]=p(a2,ir),[x4,y4]=p(ang,ir);
+    const big=(a2-ang)>Math.PI?1:0;
+    s+=`<path d="M${x1},${y1} A${r},${r} 0 ${big} 1 ${x2},${y2} L${x3},${y3} A${ir},${ir} 0 ${big} 0 ${x4},${y4} Z"
+        fill="${d.c||C[i]}"><title>${esc(d.k)}: ${fmt(d.v)} ${unit} (${pct(d.v/tot)})</title></path>`;
+    if(d.v/tot>0.05){const [tx,ty]=p((ang+a2)/2,(r+ir)/2);
+      s+=`<text class="vl" x="${tx}" y="${ty+3}" text-anchor="middle" fill="#fff">${Math.round(100*d.v/tot)}%</text>`}
+    ang=a2;
+  });
+  s+=`<text x="${cx}" y="${cy-4}" text-anchor="middle" font-size="19" font-weight="600">${fmt(tot)}</text>
+      <text class="ax" x="${cx}" y="${cy+13}" text-anchor="middle">${unit} totales</text>`;
+  return svg(w,h,s);
+}
+
+/* cascada */
+function waterfall(steps,{w=560,h=240,unit="m³"}={}){
+  const L=52,R=12,T=14,B=42,iw=w-L-R,ih=h-T-B;
+  let acc=0; const pts=[];
+  steps.forEach(s=>{ if(s.total){pts.push({...s,from:0,to:s.v}); acc=s.v}
+                     else {pts.push({...s,from:acc,to:acc+s.v}); acc+=s.v} });
+  const mx=Math.max(...pts.map(p=>Math.max(p.from,p.to)))*1.15;
+  const Y=v=>T+ih-ih*(v/mx), bw=iw/pts.length;
+  let s=`<line x1="${L}" y1="${T+ih}" x2="${w-R}" y2="${T+ih}" stroke="var(--line)"/>`;
+  ticks(mx).forEach(t=>{s+=`<line x1="${L}" y1="${Y(t)}" x2="${w-R}" y2="${Y(t)}" stroke="var(--grid)"/>
+    <text class="ax" x="${L-6}" y="${Y(t)+3}" text-anchor="end">${fmt(t)}</text>`});
+  pts.forEach((p,i)=>{
+    const x=L+i*bw+bw*0.2, bwi=bw*0.6;
+    const y0=Y(Math.max(p.from,p.to)), hh=Math.abs(Y(p.from)-Y(p.to));
+    s+=`<rect x="${x}" y="${y0}" width="${bwi}" height="${Math.max(hh,2)}" rx="2" fill="${p.c}"/>`;
+    s+=`<text class="vl" x="${x+bwi/2}" y="${y0-5}" text-anchor="middle">${fmt(Math.abs(p.v))}</text>`;
+    const words=p.k.split(" "); let ln="",lines=[];
+    words.forEach(wd=>{ if((ln+wd).length>13){lines.push(ln);ln=wd+" "}else ln+=wd+" "}); lines.push(ln);
+    lines.forEach((l,j)=>{s+=`<text class="ax" x="${x+bwi/2}" y="${T+ih+15+j*11}" text-anchor="middle">${esc(l.trim())}</text>`});
+    if(i<pts.length-1)s+=`<line x1="${x+bwi}" y1="${Y(p.to)}" x2="${L+(i+1)*bw+bw*0.2}" y2="${Y(p.to)}" stroke="#b8ccd8" stroke-dasharray="3 3"/>`;
+  });
+  return svg(w,h,s);
+}
+
+/* mapa de calor */
+function heat(rows,cols,vals,{w=760,cell=22,lw=48,unit="m³"}={}){
+  const mx=Math.max(...vals.flat().filter(v=>v!=null),1);
+  const cw=Math.min((w-lw)/cols.length,42);
+  const h=rows.length*cell+52;
+  let s="";
+  cols.forEach((c,j)=>{s+=`<text class="ax" x="${lw+j*cw+cw/2}" y="${40}" text-anchor="end" transform="rotate(-55 ${lw+j*cw+cw/2} 40)">${esc(c.replace("2026-",""))}</text>`});
+  rows.forEach((r,i)=>{
+    s+=`<text class="ax" x="${lw-6}" y="${52+i*cell+cell/2+3}" text-anchor="end">${esc(r)}</text>`;
+    cols.forEach((c,j)=>{
+      const v=vals[i][j], t=v==null?0:v/mx;
+      const col = v==null||v===0 ? "#f4f8fa" : `rgba(11,110,143,${0.10+0.9*Math.pow(t,.65)})`;
+      s+=`<rect x="${lw+j*cw}" y="${52+i*cell}" width="${cw-2}" height="${cell-2}" rx="2" fill="${col}">
+          <title>${esc(r)} · ${esc(c)}: ${fmt(v,1)} ${unit}</title></rect>`;
+      if(t>0.55)s+=`<text class="vl" x="${lw+j*cw+(cw-2)/2}" y="${52+i*cell+cell/2+3}" text-anchor="middle" fill="#fff" font-size="9">${fmt(v,0)}</text>`;
+    });
+  });
+  return svg(lw+cols.length*cw, h, s);
+}
+
+/* diagrama de flujo hidráulico */
+function flujo(){
+  const N={
+    "BOMB01":[40,20,"Bombeo\nPrincipal"], "CONT01":[190,10,"B.Principal"], "CONT02":[190,70,"B.Auxiliar"],
+    "CONT03":[350,10,"Clarif. 1\nsalida"], "CONT04":[350,80,"Clarif. 2\nentrada"], "CONT05":[350,150,"Clarif. 2\nsalida"],
+    "TQ":[500,80,"Tanques\n0 / 1-3"],
+    "CONT07":[650,10,"Salida RD"], "CONT06":[650,90,"Salida CNP"], "CONT08":[650,165,"Servicios"],
+    "CONT09":[810,-30,"P. Mayores"], "INV":[810,45,"Invernaderos\nRD"], "OTR":[810,120,"Otras áreas\n/ pérdidas"],
+    "INVC":[810,190,"Invernaderos\nCNP"]
+  };
+  const val = k => (D.contador_mes.series[k]||[]).reduce((a,b)=>a+(b||0),0);
+  const rp = D.reparto.reduce((a,r)=>({inv:a.inv+r.invernaderos,pm:a.pm+r.pmayores,ot:a.ot+r.otras,
+                                       ci:a.ci+r.cnp_inv,co:a.co+r.cnp_otras}),{inv:0,pm:0,ot:0,ci:0,co:0});
+  const E=[["BOMB01","CONT01",val("CONT01")],["BOMB01","CONT02",val("CONT02")],
+    ["CONT01","CONT03",val("CONT03")],["CONT01","CONT04",val("CONT04")],["CONT04","CONT05",val("CONT05")],
+    ["CONT03","TQ",val("CONT03")],["CONT05","TQ",val("CONT05")],
+    ["TQ","CONT07",val("CONT07")],["TQ","CONT06",val("CONT06")],["TQ","CONT08",val("CONT08")],
+    ["CONT07","CONT09",rp.pm],["CONT07","INV",rp.inv],["CONT07","OTR",rp.ot],
+    ["CONT06","INVC",rp.ci]];
+  const mx=Math.max(...E.map(e=>e[2]));
+  const W=125,H=42, OY=45;
+  let s="";
+  E.forEach(([a,b,v])=>{
+    const [x1,y1]=N[a],[x2,y2]=N[b];
+    const sw=1.5+9*Math.sqrt(v/mx);
+    const X1=x1+W, Y1=y1+OY+H/2, X2=x2, Y2=y2+OY+H/2, mid=(X1+X2)/2;
+    s+=`<path d="M${X1},${Y1} C${mid},${Y1} ${mid},${Y2} ${X2},${Y2}" fill="none" stroke="#8fbdd1"
+        stroke-opacity=".55" stroke-width="${sw}"><title>${a} → ${b}: ${fmt(v)} m³</title></path>`;
+  });
+  Object.entries(N).forEach(([k,[x,y,lab]])=>{
+    const fin=["CONT09","INV","OTR","INVC"].includes(k);
+    const col = fin? (k==="OTR"?"#fdeef0":"#e9f4f8") : "#ffffff";
+    const bd  = fin? (k==="OTR"?"#e8b6bf":"#a9d2e2") : "#cfe0e9";
+    s+=`<rect x="${x}" y="${y+OY}" width="${W}" height="${H}" rx="6" fill="${col}" stroke="${bd}"/>`;
+    lab.split("\n").forEach((l,i)=>{
+      s+=`<text x="${x+W/2}" y="${y+OY+(lab.includes("\n")?15:24)+i*13}" text-anchor="middle" font-size="11" font-weight="600" fill="#1d3a4d">${esc(l)}</text>`});
+    if(k.startsWith("CONT")||k==="BOMB01")
+      s+=`<text x="${x+W/2}" y="${y+OY-4}" text-anchor="middle" font-size="9" fill="#7d9aab">${k}</text>`;
+  });
+  return svg(960,300,s);
+}
+
+/* ============================ páginas ============================ */
+const PAGES=[
+ ["res","Resumen ejecutivo","Producción, consumo y reparto del agua en la estación."],
+ ["bal","Balance por sistema","Análisis 1 — cuánta agua mueve cada contador por sistema, categoría y tipo de agua."],
+ ["dis","Distribución Salida RD","A dónde va el agua que sale del contador Salida RD: invernaderos, extracción de semillas y otras áreas."],
+ ["inv","Consumo por invernadero","Análisis 2 — consumo diario, semanal y mensual estimado desde el volumen de gotero."],
+ ["fen","Etapa fenológica","Litros por planta y día a lo largo del ciclo, por cultivo y etapa."],
+ ["cal","Calidad de datos","Lecturas anómalas, cobertura de medición y frecuencia de lectura."]
+];
+
+function mesData(){
+  const R = D.reparto.find(r=>r.mes===MES) || D.reparto[D.reparto.length-1];
+  return R;
+}
+
+function pRes(){
+  const R=mesData();
+  const k=D.kpi;
+  const kpi=(lab,val,un,dt,cls)=>`<div class="card kpi"><div class="lab">${lab}</div>
+    <div class="val num">${val}<span class="un"> ${un}</span></div><div class="dt">${dt||""}</div></div>`;
+  const cont=D.contador_dia;
+  const ser=[{n:"Salida RD (CONT07)",v:cont.series.CONT07,c:C[0]},
+             {n:"Salida CNP (CONT06)",v:cont.series.CONT06,c:C[1]},
+             {n:"Servicios (CONT08)",v:cont.series.CONT08,c:C[3]},
+             {n:"P. Mayores (CONT09)",v:cont.series.CONT09,c:C[4]}];
+  const lab=cont.fechas.map(f=>f.slice(5));
+  return `
+  <div class="grid g4">
+    ${kpi("Producción total",fmt(k.produccion),"m³","Abril–julio 2026")}
+    ${kpi("Consumo medido",fmt(k.consumo),"m³","Contadores de consumo")}
+    ${kpi("Salida RD",fmt(k.salidaRD),"m³","CONT07")}
+    ${kpi("Riego invernaderos",fmt(k.riego),"m³","Estimado desde goteros")}
+  </div>
+  <div class="grid g4" style="margin-top:14px">
+    ${kpi("L / planta / día",fmt(k.lpd,2),"L","Promedio general")}
+    ${kpi("Plantas activas",fmt(k.plantas),"","Último día del periodo")}
+    ${kpi("Cobertura de medición",pct(k.cobertura),"","Días con lectura de gotero")}
+    ${kpi("Extracción de semillas",fmt(k.pmayores),"m³","CONT09 P. Mayores")}
+  </div>
+  <div class="grid g23" style="margin-top:14px">
+    <div class="card"><h3>Consumo diario por contador</h3>
+      <p class="hint">Lectura prorrateada a días. Los escalones son periodos largos entre lecturas.</p>
+      ${area(lab,ser,{w:640,h:230})}
+      <div class="lgd">${ser.map(s=>`<span><i class="sw" style="background:${s.c}"></i>${s.n}</span>`).join("")}</div>
+    </div>
+    <div class="card"><h3>Reparto de Salida RD — ${MESNOM[MES]}</h3>
+      <p class="hint">${R.dias} días comparables.</p>
+      ${donut([{k:"Invernaderos",v:R.invernaderos,c:C[1]},{k:"Extracción de semillas",v:R.pmayores,c:C[3]},
+               {k:"Otras áreas / pérdidas",v:R.otras,c:C[4]}],{w:300,h:236})}
+      <div class="lgd"><span><i class="sw" style="background:${C[1]}"></i>Invernaderos</span>
+      <span><i class="sw" style="background:${C[3]}"></i>Extracción de semillas</span>
+      <span><i class="sw" style="background:${C[4]}"></i>Otras áreas</span></div>
+    </div>
+  </div>
+  <div class="grid g2" style="margin-top:14px">
+    <div class="card"><h3>Producción vs. consumo por mes</h3>
+      <p class="hint">Sistema A-Principal. La diferencia es pérdida aparente o agua en tanques.</p>
+      ${(()=>{const m=D.contador_mes.meses, sr=D.contador_mes.series;
+        const prod=m.map((_,i)=>["CONT03","CONT05"].reduce((a,k)=>a+((sr[k]||[])[i]||0),0));
+        const cons=m.map((_,i)=>["CONT06","CONT07","CONT08"].reduce((a,k)=>a+((sr[k]||[])[i]||0),0));
+        return bars(m.map(x=>MESNOM[x]||x),[{n:"Producción clarificada",v:prod,c:C[0]},{n:"Consumo distribuido",v:cons,c:C[2]}],{w:520,h:220})})()}
+      <div class="lgd"><span><i class="sw" style="background:${C[0]}"></i>Producción clarificada</span>
+      <span><i class="sw" style="background:${C[2]}"></i>Consumo distribuido</span></div>
+    </div>
+    <div class="card"><h3>Riego estimado por sitio</h3>
+      <p class="hint">m³ estimados a partir del volumen de gotero × plantas activas.</p>
+      ${bars(D.riego_mes.meses.map(x=>MESNOM[x]||x),
+             [{n:"RD",v:D.riego_mes.RD,c:C[0]},{n:"CNP",v:D.riego_mes.CNP,c:C[1]}],{w:520,h:220,stack:true})}
+      <div class="lgd"><span><i class="sw" style="background:${C[0]}"></i>RD</span>
+      <span><i class="sw" style="background:${C[1]}"></i>CNP</span></div>
+    </div>
+  </div>`;
+}
+
+function pBal(){
+  const sis={}; D.balance.forEach(b=>{ (sis[b.sistema]=sis[b.sistema]||[]).push(b) });
+  const tot=D.balance.reduce((a,b)=>a+b.m3,0);
+  let filas="";
+  Object.entries(sis).forEach(([s,arr])=>{
+    const st=arr.reduce((a,b)=>a+b.m3,0);
+    filas+=`<tr style="background:#f4f9fb;font-weight:600"><td colspan="3">${esc(s)}</td>
+            <td class="r num">${fmt(st)}</td><td class="r num">${pct(st/tot)}</td></tr>`;
+    arr.forEach(b=>{filas+=`<tr><td style="padding-left:22px">${esc(b.desc)}</td><td>${esc(b.categoria)}</td>
+      <td>${esc(b.tipo)}</td><td class="r num">${fmt(b.m3)}</td><td class="r num">${pct(b.m3/tot)}</td></tr>`});
+  });
+  const porTipo={}; D.balance.forEach(b=>porTipo[b.tipo]=(porTipo[b.tipo]||0)+b.m3);
+  const porCat={}; D.balance.forEach(b=>porCat[b.categoria]=(porCat[b.categoria]||0)+b.m3);
+  return `
+  <div class="card" style="margin-bottom:14px"><h3>Recorrido del agua en la estación</h3>
+    <p class="hint">El grosor de cada línea es proporcional al volumen. Los tres bloques de la derecha con borde marcado no tienen contador: se calculan.</p>
+    <div style="overflow-x:auto">${flujo()}</div></div>
+  <div class="grid g32">
+    <div>
+      <div class="card"><h3>Por tipo de agua</h3><p class="hint">Todo el periodo</p>
+        ${hbar(Object.entries(porTipo).map(([k,v],i)=>({k,v,c:C[i]})),{w:330})}</div>
+      <div class="card" style="margin-top:14px"><h3>Por categoría</h3><p class="hint">Producción vs. consumo</p>
+        ${hbar(Object.entries(porCat).map(([k,v],i)=>({k,v,c:C[i+2]})),{w:330})}</div>
+    </div>
+    <div class="card"><h3>Matriz Sistema → Descripción</h3>
+      <p class="hint">Esta es la tabla del Análisis 1: cuánta agua distribuye cada contador según su sistema, categoría y tipo de agua.</p>
+      <div class="scroll"><table><thead><tr><th>Contador / Sistema</th><th>Categoría</th><th>Tipo de agua</th>
+        <th class="r">m³</th><th class="r">% del total</th></tr></thead><tbody>${filas}</tbody></table></div></div>
+  </div>`;
+}
+
+function pDis(){
+  const R=mesData();
+  const rows=D.reparto;
+  const wf=[{k:"Salida RD (CONT07)",v:R.salida,c:C[0],total:true},
+            {k:"Invernaderos",v:-R.invernaderos,c:C[1]},
+            {k:"Extracción de semillas",v:-R.pmayores,c:C[3]},
+            {k:"Otras áreas / pérdidas",v:-R.otras,c:C[4]}];
+  return `
+  <div class="note"><b>Cómo se calcula.</b> Invernaderos y "otras áreas" no tienen contador.
+  Invernaderos se estima con volumen de gotero × plantas activas; "otras áreas" es el residual
+  Salida RD − Invernaderos − P. Mayores. Si ese residual crece semana a semana, es fuga; si se mantiene, son áreas sin medir.</div>
+  <div class="grid g3">
+    <div class="card"><h3>Reparto — ${MESNOM[MES]}</h3><p class="hint">${R.dias} días comparables</p>
+      ${donut([{k:"Invernaderos",v:R.invernaderos,c:C[1]},{k:"Extracción de semillas",v:R.pmayores,c:C[3]},
+               {k:"Otras áreas",v:R.otras,c:C[4]}],{w:290,h:230})}</div>
+    <div class="card" style="grid-column:span 2"><h3>Cascada de Salida RD</h3>
+      <p class="hint">De lo que entrega el contador a lo que se explica.</p>${waterfall(wf,{w:560,h:250})}</div>
+  </div>
+  <div class="grid g2" style="margin-top:14px">
+    <div class="card"><h3>Reparto mensual (100 %)</h3><p class="hint">Cómo cambia el destino del agua mes a mes.</p>
+      ${bars(rows.map(r=>MESNOM[r.mes]),[
+        {n:"Invernaderos",v:rows.map(r=>r.invernaderos),c:C[1]},
+        {n:"Extracción de semillas",v:rows.map(r=>r.pmayores),c:C[3]},
+        {n:"Otras áreas",v:rows.map(r=>r.otras),c:C[4]}],{w:520,h:230,stack:true,pct100:true})}
+      <div class="lgd"><span><i class="sw" style="background:${C[1]}"></i>Invernaderos</span>
+      <span><i class="sw" style="background:${C[3]}"></i>Extracción</span><span><i class="sw" style="background:${C[4]}"></i>Otras</span></div></div>
+    <div class="card"><h3>Salida CNP</h3><p class="hint">Mismo cálculo para el circuito CNP (invernaderos N y P).</p>
+      ${bars(rows.map(r=>MESNOM[r.mes]),[
+        {n:"Invernaderos CNP",v:rows.map(r=>r.cnp_inv),c:C[1]},
+        {n:"No explicado",v:rows.map(r=>r.cnp_otras),c:C[4]}],{w:520,h:230,stack:true})}
+      <div class="lgd"><span><i class="sw" style="background:${C[1]}"></i>Invernaderos CNP</span>
+      <span><i class="sw" style="background:${C[4]}"></i>No explicado</span></div></div>
+  </div>
+  <div class="card" style="margin-top:14px"><h3>Detalle mensual</h3>
+    <table><thead><tr><th>Mes</th><th class="r">Días</th><th class="r">Salida RD m³</th><th class="r">Invernaderos m³</th>
+      <th class="r">%</th><th class="r">Extracción m³</th><th class="r">%</th><th class="r">Otras m³</th><th class="r">%</th></tr></thead>
+    <tbody>${rows.map(r=>`<tr><td>${MESNOM[r.mes]}</td><td class="r num">${r.dias}</td>
+      <td class="r num">${fmt(r.salida)}</td><td class="r num">${fmt(r.invernaderos)}</td><td class="r num">${pct(r.invernaderos/r.salida)}</td>
+      <td class="r num">${fmt(r.pmayores)}</td><td class="r num">${pct(r.pmayores/r.salida)}</td>
+      <td class="r num">${fmt(r.otras)}</td><td class="r num">${pct(r.otras/r.salida)}</td></tr>`).join("")}</tbody></table></div>`;
+}
+
+function pInv(){
+  const det=D.detalle_inv[MES]||[];
+  const top=det.slice(0,14).map(d=>({k:d.inv+" · "+d.crop,v:d.m3,c:d.sitio==="CNP"?C[1]:C[0]}));
+  return `
+  <div class="grid g2">
+    <div class="card"><h3>m³ por invernadero — ${MESNOM[MES]}</h3>
+      <p class="hint">Azul oscuro RD · turquesa CNP</p>${hbar(top,{w:520})}</div>
+    <div class="card"><h3>Litros por planta y día</h3>
+      <p class="hint">Indicador comparable entre invernaderos de distinto tamaño. Rango esperado 0.3 – 3.0 L.</p>
+      ${hbar(det.slice(0,14).map(d=>({k:d.inv,v:d.lpd,c:d.lpd>2.5||d.lpd<0.3?C[4]:C[2]})),{w:520,unit:"L"})}</div>
+  </div>
+  <div class="card" style="margin-top:14px"><h3>Mapa de calor semanal</h3>
+    <p class="hint">m³ por invernadero y semana ISO. Las celdas vacías son invernaderos sin ciclo activo o sin lectura.</p>
+    <div style="overflow-x:auto">${heat(D.heatmap.invernaderos,D.heatmap.semanas,D.heatmap.valores,{w:820})}</div></div>
+  <div class="card" style="margin-top:14px"><h3>Detalle por invernadero — ${MESNOM[MES]}</h3>
+    <div class="scroll"><table><thead><tr><th>Invernadero</th><th>Sitio</th><th>Cultivo</th>
+      <th class="r">Plantas</th><th class="r">mL/planta/día</th><th class="r">m³ del mes</th>
+      <th class="r">L/planta/día</th><th class="r">Cobertura</th></tr></thead>
+    <tbody>${det.map(d=>`<tr><td><b>${esc(d.inv)}</b></td><td>${d.sitio}</td><td>${esc(d.crop)}</td>
+      <td class="r num">${fmt(d.plantas)}</td><td class="r num">${fmt(d.ml)}</td><td class="r num">${fmt(d.m3,1)}</td>
+      <td class="r num">${fmt(d.lpd,2)}</td>
+      <td class="r"><span class="tag ${d.cob>=.8?"ok":d.cob>=.5?"wr":"bd"}">${pct(d.cob,0)}</span></td></tr>`).join("")}</tbody></table></div></div>`;
+}
+
+function pFen(){
+  const et=D.etapa, crops=Object.keys(et.series);
+  const cur=D.curva;
+  const labs=[]; for(let i=0;i<=120;i+=5)labs.push(i);
+  const ser=Object.entries(cur).map(([cr,pts],i)=>({n:cr,c:C[i],
+    v:labs.map(l=>{const p=pts.find(p=>p[0]===l);return p?p[1]:null})}));
+  const serFill=ser.map(s=>({...s,v:s.v.map(v=>v==null?0:v)}));
+  return `
+  <div class="card"><h3>Curva de demanda hídrica del ciclo</h3>
+    <p class="hint">Litros por planta y día según los días desde trasplante (DDT). Con esta curva se presupuesta el agua de los ciclos que vienen.</p>
+    ${area(labs.map(l=>l+"d"),serFill,{w:760,h:250,fill:false,xevery:2,unit:"L"})}
+    <div class="lgd">${ser.map(s=>`<span><i class="sw" style="background:${s.c}"></i>${s.n}</span>`).join("")}</div></div>
+  <div class="grid g2" style="margin-top:14px">
+    <div class="card"><h3>Consumo por etapa fenológica</h3>
+      <p class="hint">Litros por planta y día promedio en cada etapa.</p>
+      ${bars(["Vegetativa","Polinización","Llenado","Cosecha","Post"],
+             crops.map((cr,i)=>({n:cr,v:et.series[cr],c:C[i]})),{w:520,h:250,unit:"L"})}
+      <div class="lgd">${crops.map((c,i)=>`<span><i class="sw" style="background:${C[i]}"></i>${c}</span>`).join("")}</div></div>
+    <div class="card"><h3>Tabla de etapas</h3>
+      <p class="hint">L/planta/día. Las celdas vacías son etapas sin datos en el periodo.</p>
+      <table><thead><tr><th>Cultivo</th>${et.etapas.map(e=>`<th class="r">${e}</th>`).join("")}</tr></thead>
+      <tbody>${crops.map(cr=>`<tr><td><b>${cr}</b></td>${et.series[cr].map(v=>`<td class="r num">${v?fmt(v,2):"—"}</td>`).join("")}</tr>`).join("")}</tbody></table>
+      <p class="hint" style="margin-top:12px">Días desde trasplante de cada hito — Tomato: polinización 30–40, cosecha 80–92 ·
+      Pepper: 27–39, 75–87 · Cucumber: 30–45, 85–100 · Melon: 30–40, 64–74 · Watermelon: 30–45, 75–90 · Tomato Cherry: 24–34, 52–62.</p></div>
+  </div>`;
+}
+
+function pCal(){
+  const a=D.anomalias, per=D.periodos.sort((x,y)=>y.dias-x.dias);
+  const alertas=D.reparto.filter(r=>r.invernaderos+r.pmayores>r.salida);
+  return `
+  ${alertas.length?`<div class="note"><b>Validación fallida en ${alertas.map(r=>MESNOM[r.mes]).join(", ")}:</b>
+    el riego estimado más P. Mayores supera lo que entregó el contador Salida RD. Revisar el conteo de plantas de esos meses
+    o una subregistración del contador.</div>`:""}
+  <div class="grid g4">
+    <div class="card kpi"><div class="lab">Lecturas anómalas</div><div class="val num">${a.length}</div>
+      <div class="dt">de ${D.meta.registros} registros</div></div>
+    <div class="card kpi"><div class="lab">Filas duplicadas eliminadas</div><div class="val num">${fmt(D.meta.filas_orig-D.meta.filas_dedup)}</div>
+      <div class="dt">de ${fmt(D.meta.filas_orig)} en CONSUMOAGUAINVERNADEROS</div></div>
+    <div class="card kpi"><div class="lab">Cobertura de medición</div><div class="val num">${pct(D.kpi.cobertura)}</div>
+      <div class="dt">días con lectura de gotero</div></div>
+    <div class="card kpi"><div class="lab">Invernaderos con datos</div><div class="val num">${D.meta.invernaderos}</div>
+      <div class="dt">${D.meta.sets} sets en el periodo</div></div>
+  </div>
+  <div class="grid g23" style="margin-top:14px">
+    <div class="card"><h3>Lecturas que el modelo descarta</h3>
+      <p class="hint">Estas filas no entran a ningún cálculo. Hay que corregirlas en SharePoint, no en Power BI.</p>
+      <div class="scroll"><table><thead><tr><th>Contador</th><th>Fecha</th><th class="r">Lectura anterior</th>
+        <th class="r">Lectura actual</th><th class="r">Consumo m³</th><th>Motivo</th></tr></thead>
+      <tbody>${a.map(x=>`<tr><td><b>${x.equipo}</b></td><td>${x.fecha}</td><td class="r num">${fmt(x.ant)}</td>
+        <td class="r num">${fmt(x.act)}</td><td class="r num">${fmt(x.m3)}</td>
+        <td><span class="tag bd">${esc(x.motivo)}</span></td></tr>`).join("")}</tbody></table></div></div>
+    <div class="card"><h3>Días entre lecturas</h3>
+      <p class="hint">Promedio por contador. Arriba de 7 días, el prorrateo pierde precisión.</p>
+      ${hbar(per.map(p=>({k:p.equipo,v:p.dias,c:p.dias>7?C[4]:p.dias>4?C[3]:C[2]})),{w:330,unit:"días"})}</div>
+  </div>
+  <div class="card" style="margin-top:14px"><h3>Cobertura de medición de goteros por invernadero</h3>
+    <p class="hint">Porcentaje de días del mes con lectura real. Lo demás se rellena con la última lectura (máximo 7 días).</p>
+    <div style="overflow-x:auto"><table><thead><tr><th>Invernadero</th>${D.cobertura.meses.map(m=>`<th class="r">${MESNOM[m]}</th>`).join("")}</tr></thead>
+    <tbody>${D.cobertura.invernaderos.map((iv,i)=>`<tr><td><b>${iv}</b></td>${D.cobertura.valores[i].map(v=>
+      `<td class="r">${v==null||isNaN(v)?"—":`<span class="tag ${v>=.8?"ok":v>=.5?"wr":"bd"}">${pct(v,0)}</span>`}</td>`).join("")}</tr>`).join("")}</tbody></table></div></div>`;
+}
+
+const REND={res:pRes,bal:pBal,dis:pDis,inv:pInv,fen:pFen,cal:pCal};
+let CUR="res";
+
+function draw(){
+  const p=PAGES.find(p=>p[0]===CUR);
+  document.getElementById("ttl").textContent=p[1];
+  document.getElementById("dsc").textContent=p[2];
+  document.getElementById("pages").innerHTML=`<div class="page on">${REND[CUR]()}</div>`;
+  document.querySelectorAll("#nav a").forEach(a=>a.classList.toggle("on",a.dataset.p===CUR));
+  document.querySelectorAll("#mes button").forEach(b=>b.classList.toggle("on",b.dataset.m===MES));
+}
+document.getElementById("nav").innerHTML=PAGES.map(p=>`<a data-p="${p[0]}">${p[1]}</a>`).join("");
+document.getElementById("mes").innerHTML=D.reparto.map(r=>`<button data-m="${r.mes}">${MESNOM[r.mes]}</button>`).join("");
+document.getElementById("nav").onclick=e=>{if(e.target.dataset.p){CUR=e.target.dataset.p;draw()}};
+document.getElementById("mes").onclick=e=>{if(e.target.dataset.m){MES=e.target.dataset.m;draw()}};
+draw();
+</script>
