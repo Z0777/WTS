@@ -1,0 +1,356 @@
+# Correcciones aplicadas al modelo
+### Reglas de cálculo actualizadas · reemplaza las secciones equivalentes de la guía anterior
+
+---
+
+## Resumen de los 6 cambios
+
+| # | Regla anterior | Regla nueva | Efecto en los números |
+|---|---|---|---|
+| 1 | Duplicados de gotero → **promedio** | Duplicados de la misma nave y día → **el dato más alto** | 4,388 filas → 1,904 lecturas nave-día |
+| 2 | Lecturas repetidas del contador el mismo día → se sumaban | **Una lectura por contador y día = el dato más alto**, y el consumo es la diferencia contra la última lectura buena | Las anomalías bajaron de 12 a **2** |
+| 3 | BOMB01 sumaba a producción | **BOMB01 fuera del modelo.** Es una bomba, no contabiliza agua | Se quitaron 327,419 m³ fantasma |
+| 4 | Días sin medición → se arrastraba la última lectura, máximo 7 días, y después quedaba en blanco | **Todos los días del ciclo tienen valor**: interpolación lineal entre la medición anterior y la siguiente | Ya no hay días en blanco: 3,790 medidos, 2,272 interpolados, 158 extendidos |
+| 5 | Meses fijos abril–julio | **Meses y semanas se generan de los datos** | Agosto aparece solo cuando cargues sus lecturas |
+| 6 | Fecha ajustada −6 horas siempre | **Solo se ajustan las columnas que traen hora**; las de "Solo fecha" no se tocan | Evita que todo el histórico se corra un día |
+
+---
+
+## 1. El dato más alto, no el promedio
+
+Tienes razón en el diagnóstico: si en un mismo invernadero, nave y día hay varias filas, es porque midieron a distintas horas y la lista no guarda la hora. En ese caso el promedio subestima. **La lectura buena es la más alta.**
+
+Hay que distinguir dos pasos que son cosas distintas:
+
+**Paso 1 — misma nave, mismo día → MÁXIMO.** Aquí sí es el dato más alto, sin discusión. Son mediciones repetidas de lo mismo.
+
+**Paso 2 — entre naves distintas del mismo invernadero → PROMEDIO.** Aquí no aplica el máximo, y el motivo es aritmético, no de criterio. Cada nave tiene sus propias plantas. El agua del invernadero es:
+
+```
+Litros_GH = Σ_naves ( mL_nave × Plantas_nave )
+```
+
+Como las plantas están por invernadero y no por nave, se reparten parejo: `Plantas_nave = Plantas_GH / n`. Entonces:
+
+```
+Litros_GH = (Plantas_GH / n) × Σ mL_nave = Plantas_GH × promedio(mL_nave)
+```
+
+Si en el paso 2 tomaras el máximo, estarías diciendo que **todas** las naves del invernadero riegan como la que más regó. Con un invernadero de 4 naves donde una está en cosecha (1,800 mL) y tres en vegetativo (600 mL), el máximo daría 1,800 para las cuatro: **un 100 % de sobrestimación**.
+
+Te dejé un interruptor por si quieres probar los dos escenarios. Es un parámetro más:
+
+| Parámetro | Tipo | Valor | Qué hace |
+|---|---|---|---|
+| `pMetodoNaves` | Texto | `Promedio` | Cambia a `Maximo` y todo el modelo recalcula con el máximo entre naves |
+
+---
+
+## 2. Los contadores: una lectura por día, la más alta
+
+El mismo criterio aplica a `REGISTROS_AGUA`. Hay días con dos lecturas del mismo contador (el 18/05 casi todos). La regla nueva:
+
+1. Se consolida **una lectura por contador y por día = `MAX(LECTURA_ACTUAL)`**.
+2. Se descartan las lecturas en cero o vacías.
+3. El consumo es `lectura de hoy − última lectura buena`, **sin usar la columna `LECTURA_ANTERIOR`**, porque esa columna es justo la que se corrompe cuando alguien digita mal.
+4. Si el salto es negativo o mayor a 20,000 m³, esa lectura se descarta y la siguiente se calcula contra la última buena. Así una digitación mala no arrastra el error al periodo siguiente.
+
+Con esto **las anomalías bajaron de 12 a 2**, que son las dos reales:
+
+| Contador | Fecha | Lectura | Motivo |
+|---|---|---|---|
+| CONT07 | 22/05/2026 | 0 | Lectura actual en cero |
+| CONT07 | 24/07/2026 | 3,274,190 | Consumo fuera de rango (es la lectura de CONT01 con un cero extra) |
+
+Las otras 10 eran falsas alarmas que salían de comparar `CONSUMO_M3` contra `LECTURA_ACTUAL − LECTURA_ANTERIOR` cuando había dos lecturas el mismo día.
+
+**Sobre BOMB01:** confirmado, fuera del modelo. Se filtra desde la primera consulta.
+
+**Sobre CONT06:** confirmado, es Salida CNP. En `dEquipo` está fijo como `Salida CNP / CNP / Consumo`, así que el registro del 22/04 que dice "Clarificador 2 Salida" queda corregido automáticamente en todo el histórico.
+
+**Sobre la frecuencia de lectura:** el modelo **no supone** ninguna frecuencia. Calcula `Dias_Periodo` restando fechas de lecturas reales. Si hoy leen cada 2 días y en septiembre pasan a semanal, el prorrateo se ajusta solo. Lo único que cambia es la precisión, y por eso está el indicador `Días promedio entre lecturas` en la página de calidad.
+
+---
+
+## 3. Todos los días del ciclo tienen agua
+
+Este era el punto más importante y tenías razón: el invernadero riega el martes aunque nadie haya medido el martes. La regla nueva llena **todos** los días entre trasplante y última cosecha:
+
+| Situación | Qué se usa | Etiqueta |
+|---|---|---|
+| El día tiene medición | El máximo de ese día | `Medido` |
+| El día está **entre** dos mediciones | **Interpolación lineal** entre la anterior y la siguiente, ponderada por los días de distancia | `Interpolado` |
+| El día está antes de la primera o después de la última medición del ciclo | La medición más cercana | `Extendido` |
+| El invernadero no tiene ninguna medición en todo el ciclo | Promedio del mismo cultivo en la misma etapa, de los demás invernaderos | `Estimado por cultivo` |
+
+**Por qué interpolación y no un promedio del mes.** El riego no es plano: sube del vegetativo a la cosecha y baja al final. Un promedio mensual aplana esa curva y te borra justo la información que sirve para presupuestar. La interpolación respeta la tendencia real entre las dos mediciones que sí existen.
+
+Ejemplo con datos tuyos, invernadero 3A:
+
+| Fecha | mL medido | mL usado | Etiqueta |
+|---|---|---|---|
+| 12/06 | 1,700 | 1,700 | Medido |
+| 13/06 | — | 1,725 | Interpolado |
+| 14/06 | — | 1,750 | Interpolado |
+| 15/06 | — | 1,775 | Interpolado |
+| 16/06 | 1,800 | 1,800 | Medido |
+
+Con la regla anterior, del 13 al 15 se habría repetido 1,700 y el día 20 habría quedado en blanco. Ahora no queda ningún día sin agua.
+
+**Resultado en tus datos:** 3,790 días-set medidos (61 %), 2,272 interpolados (36 %), 158 extendidos (3 %), **cero días sin dato**.
+
+---
+
+## 4. La fecha de SharePoint: el detalle de tu imagen
+
+En la captura que enviaste, `FECHA_LECTURA` se ve como `4/22/2026` — **sin hora**. Eso significa que en SharePoint esa columna está configurada como **"Solo fecha"**, mientras que `Fecha de colecta de muestra` sí trae hora (las 16:00 y 17:00).
+
+Esa diferencia importa mucho, y aquí está la trampa:
+
+- Una columna **con hora** llega en UTC. La medición de las 17:00 en Guatemala llega como 23:00. Si no ajustas −6, no pasa nada con la fecha (sigue siendo el mismo día), pero si la muestra fuera de las 19:00 llegaría como 01:00 del día siguiente y sí se correría.
+- Una columna **"Solo fecha"** llega como el día a las 00:00. **Si le restas 6 horas, se va al día anterior a las 18:00 → toda tu base se corre un día hacia atrás.**
+
+Por eso la función se cambió: **detecta sola** si la columna trae hora, y solo ajusta las que la traen.
+
+```m
+(entrada as any) as nullable date =>
+let
+    reloj =
+        if entrada = null then null
+        else if Value.Is(entrada, type datetimezone) then DateTimeZone.RemoveZone(entrada)
+        else if Value.Is(entrada, type datetime)     then entrada
+        else if Value.Is(entrada, type date)         then DateTime.From(entrada)
+        else try DateTime.From(entrada) otherwise null,
+
+    // si la hora es exactamente 00:00, la columna es "Solo fecha": NO se ajusta
+    soloFecha = reloj <> null and DateTime.Time(reloj) = #time(0,0,0),
+    ajustada  = if reloj = null then null
+                else if soloFecha then reloj
+                else reloj + #duration(0, pAjusteHoras, 0, 0)
+in
+    if ajustada = null then null else DateTime.Date(ajustada)
+```
+
+| Columna | Tipo en SharePoint | ¿Se ajusta? |
+|---|---|---|
+| `REGISTROS_AGUA[FECHA_LECTURA]` | Solo fecha | No |
+| `CONSUMOAGUAINVERNADEROS[Fecha de colecta de muestra]` | Fecha y hora | Sí, −6 |
+| `PLANTAS[Real  transplanting date]` y las otras tres | Solo fecha | No |
+
+**Cómo verificarlo en 30 segundos:** carga `CONSUMOAGUAINVERNADEROS` sin transformar nada y mira la columna de fecha. Si dice **22:00 o 23:00**, deja `pAjusteHoras = -6`. Si ya dice **16:00 o 17:00**, ponlo en `0`.
+
+---
+
+## 5. Qué es el archivo `BTI_AGUA_TABLAS_BASE_PowerBI.xlsx`
+
+Es una comodidad, **no es obligatorio**. Puedes ignorarlo por completo.
+
+Contiene el contenido de las 5 tablas de catálogo — las que no existen en SharePoint y hay que crear dentro de Power BI: el listado de los contadores con su jerarquía, el listado de invernaderos con su sitio y naves, la tabla de ciclos de cultivo, y el ejemplo de cómo debe verse `PLANTAS` cuando la llenen.
+
+Tres formas de usarlo, elige una:
+
+| Forma | Cómo | Cuándo conviene |
+|---|---|---|
+| **Ignorarlo** | Usa el código M de la guía. Cada tabla se escribe con `Table.FromRows` | Es lo más limpio: el archivo `.pbix` no depende de ningún Excel |
+| **Copiar y pegar** | Abre la hoja, copia la tabla, y en Power BI: **Inicio → Escribir datos → pegar** | Si prefieres verlas en pantalla antes de cargarlas |
+| **Subirlo a SharePoint** | Crea 5 listas nuevas con ese contenido y conéctalas como las otras | Solo si quieren que agronomía pueda editar naves o ciclos sin abrir Power BI |
+
+Lo único de ese archivo que sí necesitas revisar es la hoja `PLANTAS_EJEMPLO`: es el formato que debe tener la lista cuando la llenen, con los casos que el modelo tiene que manejar (varios sets por invernadero, dos cultivos conviviendo, fecha real contra estimada, ciclos ya terminados).
+
+---
+
+## 6. Código M corregido
+
+Solo cambian tres consultas. El resto de la guía sigue igual.
+
+### 6.1 Parámetro nuevo
+
+**Inicio → Administrar parámetros → Nuevo**: `pMetodoNaves`, tipo Texto, valor `Promedio`.
+
+### 6.2 `REGISTROS_AGUA`
+
+```m
+let
+    Origen = SharePoint.Tables(pSitio, [Implementation="2.0", ViewMode="All"]),
+    Lista  = Origen{[Title="REGISTROS_AGUA"]}[Items],
+    Cols   = Table.SelectColumns(Lista, {"ID_EQUIPO","FECHA_LECTURA","LECTURA_ANTERIOR","LECTURA_ACTUAL",
+             "CONSUMO_M3","TIPOAGUA","AREA","METODO_REGISTRO","DESCRIPCION","DETALLE","CATEGORIA","DISTRIBUCION","SISTEMA"}),
+
+    // BOMB01 es una bomba, no contabiliza agua
+    SinBomba = Table.SelectRows(Cols, each Text.Upper(Text.Trim(Text.From([ID_EQUIPO]))) <> "BOMB01"),
+
+    // limpieza sobre la misma columna, sin renombrar nada
+    Limpio = Table.TransformColumns(SinBomba, {
+                {"ID_EQUIPO",        each Text.Upper(Text.Trim(Text.From(_))), type text},
+                {"FECHA_LECTURA",    each fnFechaSP(_), type date},
+                {"LECTURA_ANTERIOR", each fnTextoANumero(_), type number},
+                {"LECTURA_ACTUAL",   each fnTextoANumero(_), type number},
+                {"CONSUMO_M3",       each fnTextoANumero(_), type number}}),
+
+    // ---- UNA lectura por contador y dia: EL DATO MAS ALTO ----
+    PorDia = Table.Group(Limpio, {"ID_EQUIPO","FECHA_LECTURA"}, {
+                {"LECTURA_ACTUAL",   each List.Max([LECTURA_ACTUAL]), type number},
+                {"LECTURA_ANTERIOR", each List.Min([LECTURA_ANTERIOR]), type number},
+                {"CONSUMO_M3",       each List.Sum([CONSUMO_M3]), type number},
+                {"Lecturas_Del_Dia", each Table.RowCount(_), Int64.Type},
+                {"_d", each Table.FirstN(Table.SelectColumns(_,
+                    {"TIPOAGUA","AREA","METODO_REGISTRO","DESCRIPCION","DETALLE","CATEGORIA","DISTRIBUCION","SISTEMA"}),1), type table}}),
+    Desc   = Table.ExpandTableColumn(PorDia, "_d",
+                {"TIPOAGUA","AREA","METODO_REGISTRO","DESCRIPCION","DETALLE","CATEGORIA","DISTRIBUCION","SISTEMA"}),
+
+    // se descartan las lecturas vacias o en cero
+    Positivas = Table.SelectRows(Desc, each [LECTURA_ACTUAL] <> null and [LECTURA_ACTUAL] > 0),
+
+    // ---- consumo contra la ULTIMA LECTURA BUENA ----
+    // Si una lectura retrocede o salta mas de pLimiteConsumoM3, se marca y NO se toma
+    // como referencia: la siguiente se calcula contra la ultima buena.
+    PorEquipo = Table.Group(Positivas, {"ID_EQUIPO"}, {{"t", each
+        let
+            t0    = Table.Sort(_, {{"FECHA_LECTURA", Order.Ascending}}),
+            filas = Table.ToRecords(t0),
+            proc  = List.Accumulate(filas, [ult = null, acc = {}], (e, f) =>
+                let
+                    dif  = if e[ult] = null then null else f[LECTURA_ACTUAL] - e[ult][LECTURA_ACTUAL],
+                    malo = dif <> null and (dif < 0 or dif > pLimiteConsumoM3),
+                    reg  = f & [
+                        Lectura_Previa  = if e[ult] = null then null else e[ult][LECTURA_ACTUAL],
+                        Fecha_Previa    = if e[ult] = null then null else e[ult][FECHA_LECTURA],
+                        M3_Final        = if malo or dif = null then null else dif,
+                        Motivo_Anomalia = if malo then (if dif < 0 then "Retroceso de lectura"
+                                                        else "Consumo fuera de rango") else null]
+                in
+                    [ ult = if malo then e[ult] else f, acc = e[acc] & {reg} ])
+        in
+            Table.FromRecords(proc[acc]), type table}}),
+    Plano  = Table.ExpandTableColumn(PorEquipo, "t",
+                List.Difference(Table.ColumnNames(PorEquipo{0}[t]), {"ID_EQUIPO"})),
+
+    Dias   = Table.AddColumn(Plano, "Dias_Periodo", each
+                if [Fecha_Previa] = null then null
+                else List.Max({Duration.Days([FECHA_LECTURA] - [Fecha_Previa]), 1}), Int64.Type),
+    Valido = Table.AddColumn(Dias, "Es_Valido", each [Motivo_Anomalia] = null, type logical)
+in
+    Valido
+```
+
+### 6.3 `ConsumoGoteroDia`
+
+```m
+let
+    Origen  = Table.SelectRows(CONSUMOAGUAINVERNADEROS, each [ML_Valido] = true),
+
+    // PASO 1 — misma nave, mismo dia: EL DATO MAS ALTO
+    PorNave = Table.Group(Origen, {"Invernadero","Nave","Fecha de colecta de muestra"},
+                {{"ML",  each List.Max([#"Volumen de gotero"]), type number},
+                 {"DRE", each List.Max([#"Volumen drenaje"]), type number},
+                 {"Repeticiones", each Table.RowCount(_), Int64.Type}}),
+
+    // PASO 2 — entre naves: promedio (o maximo, segun pMetodoNaves)
+    PorInv  = Table.Group(PorNave, {"Invernadero","Fecha de colecta de muestra"},
+                {{"ML_Planta_Dia",  each if pMetodoNaves = "Maximo" then List.Max([ML]) else List.Average([ML]), type number},
+                 {"ML_Drenaje_Dia", each if pMetodoNaves = "Maximo" then List.Max([DRE]) else List.Average([DRE]), type number},
+                 {"Naves_Medidas",  each Table.RowCount(_), Int64.Type}}),
+
+    Marca   = Table.AddColumn(PorInv, "Fecha_Medicion", each [#"Fecha de colecta de muestra"], type date)
+in
+    Table.RenameColumns(Marca, {{"Fecha de colecta de muestra","Fecha"}})
+```
+
+### 6.4 `fRiegoDia` — con interpolación
+
+Los pasos 1, 2 y 3 son los mismos de la guía (expandir cada set a días, calcular DDT y etapa, y unir con `ConsumoGoteroDia`). Cambia del paso 4 en adelante:
+
+```m
+    // 4) preparar las columnas auxiliares de interpolacion
+    Aux    = Table.AddColumn(
+                Table.AddColumn(ConML, "_MLAnt", each [ML_Planta_Dia], type number),
+                "_FecAnt", each if [ML_Planta_Dia] = null then null else [Fecha], type date),
+    Aux2   = Table.AddColumn(
+                Table.AddColumn(Aux, "_MLSig", each [ML_Planta_Dia], type number),
+                "_FecSig", each if [ML_Planta_Dia] = null then null else [Fecha], type date),
+
+    // 5) hacia atras y hacia adelante, DENTRO de cada invernadero
+    Orden  = Table.Sort(Aux2, {{"Greenhouse", Order.Ascending},{"Fecha", Order.Ascending}}),
+    Grupo  = Table.Group(Orden, {"Greenhouse"}, {{"t", each
+                Table.FillUp(
+                    Table.FillDown(Table.Sort(_, {{"Fecha", Order.Ascending}}), {"_MLAnt","_FecAnt"}),
+                    {"_MLSig","_FecSig"}), type table}}),
+    Plano  = Table.ExpandTableColumn(Grupo, "t", List.Difference(Table.ColumnNames(Grupo{0}[t]), {"Greenhouse"})),
+
+    // 6) interpolacion lineal
+    MLUso  = Table.AddColumn(Plano, "ML_Usado", each
+        if [ML_Planta_Dia] <> null then [ML_Planta_Dia]
+        else if [_MLAnt] <> null and [_MLSig] <> null and [_FecSig] <> [_FecAnt] then
+            [_MLAnt] + ([_MLSig] - [_MLAnt])
+                     * Duration.Days([Fecha] - [_FecAnt]) / Duration.Days([_FecSig] - [_FecAnt])
+        else if [_MLAnt] <> null then [_MLAnt]
+        else if [_MLSig] <> null then [_MLSig]
+        else null, type number),
+
+    Estado = Table.AddColumn(MLUso, "Estado_Dato", each
+        if [ML_Planta_Dia] <> null then "Medido"
+        else if [_MLAnt] <> null and [_MLSig] <> null then "Interpolado"
+        else if [ML_Usado] <> null then "Extendido"
+        else "Sin medicion en el ciclo", type text),
+
+    // 7) litros por set
+    Litros = Table.AddColumn(Estado, "Litros_Dia", each
+                if [ML_Usado] = null then null else [ML_Usado] * [PlantsTransplanted] / 1000, type number),
+    M3     = Table.AddColumn(Litros, "M3_Dia", each
+                if [Litros_Dia] = null then null else [Litros_Dia] / 1000, type number),
+    Quita  = Table.RemoveColumns(M3, {"_MLAnt","_FecAnt","_MLSig","_FecSig"})
+in
+    Quita
+```
+
+> `pDiasMaxRelleno` ya no se usa. Puedes borrar el parámetro o dejarlo; no afecta.
+
+### 6.5 Medida nueva para la página de calidad
+
+```dax
+% Dias Medidos =
+DIVIDE ( CALCULATE ( COUNTROWS ( fRiegoDia ), fRiegoDia[Estado_Dato] = "Medido" ), COUNTROWS ( fRiegoDia ) )
+
+m3 Riego Medido      = CALCULATE ( [m3 Riego], fRiegoDia[Estado_Dato] = "Medido" )
+m3 Riego Interpolado = CALCULATE ( [m3 Riego], fRiegoDia[Estado_Dato] <> "Medido" )
+```
+
+---
+
+## 7. Día, semana y mes — y que agosto entre solo
+
+**Nada está fijo a abril–julio.** Todo sale de `dCalendario`, que se genera hasta el 31 de diciembre del año siguiente. En cuanto cargues las lecturas de agosto y refresques, agosto aparece en todos los visuales sin tocar nada.
+
+Para que las tres granularidades vivan en un solo gráfico, usa el parámetro de campo (**Modelado → Nuevo parámetro → Campos**):
+
+```dax
+Granularidad = {
+    ( "Día",    NAMEOF ( 'dCalendario'[Fecha] ),      0 ),
+    ( "Semana", NAMEOF ( 'dCalendario'[AnioSemana] ), 1 ),
+    ( "Mes",    NAMEOF ( 'dCalendario'[AnioMes] ),    2 )
+}
+```
+
+Pones `Granularidad` en el eje X del gráfico y agregas una segmentación con ese mismo campo. El usuario cambia de día a semana a mes con un clic, y el gráfico se reconstruye solo. En el prototipo HTML ya está funcionando: es el botón Día / Semana / Mes en la página **Consumo por invernadero**.
+
+Dos cuidados con la granularidad diaria:
+
+1. **El consumo del contador está prorrateado.** Si leyeron el 15 y el 19, los cuatro días muestran el mismo valor. Por eso la línea diaria del contador se ve escalonada y la del riego no. No es un error del modelo, es la realidad de la frecuencia de lectura. Cuando quieras comparar de verdad, usa semana o mes.
+2. **Compara solo días con contador.** En abril las lecturas empiezan el 22, y el riego tiene datos desde enero. Si comparas el mes completo, el riego parece mayor que el contador. Los visuales de reparto ya restringen la comparación a la ventana donde el contador tiene datos, y muestran cuántos días son.
+
+---
+
+## 8. Los números después de las correcciones
+
+| Mes | Días comparables | Salida RD m³ | Invernaderos m³ | % | Extracción m³ | % | Otras áreas m³ | % |
+|---|---|---|---|---|---|---|---|---|
+| Abril | 8 | 1,380 | 285 | 21 % | 198 | 14 % | 897 | 65 % |
+| Mayo | 31 | 4,389 | 1,104 | 25 % | 536 | 12 % | 2,749 | 63 % |
+| Junio | 30 | 4,209 | 1,177 | 28 % | 333 | 8 % | 2,698 | 64 % |
+| Julio | 20 | 1,392 | 1,212 | 87 % | 205 | 15 % | 0 | 0 % |
+
+Julio se sale del patrón: el riego estimado más la extracción **superan** lo que entregó el contador. Eso es una validación que falla, y el tablero lo marca en rojo en la página de calidad. Puede ser que el contador esté subregistrando, o que las plantas de julio del ejemplo estén infladas. Cuando cargues `PLANTAS` real vas a ver cuál de las dos es.
+
+El patrón de mayo y junio sí es consistente: alrededor de **un 64 % del agua de Salida RD no queda explicada** por invernaderos ni por extracción de semillas. Ese es el número que hay que perseguir. Con las lecturas de agosto tendrás un cuarto punto para confirmar si es una constante (áreas sin medir) o una tendencia (fuga).
+
+Recuerda que la columna de invernaderos todavía usa **plantas de ejemplo**. Ese porcentaje va a moverse cuando llenen `PLANTAS`; los demás son definitivos.
