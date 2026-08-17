@@ -1,0 +1,703 @@
+# Manual definitivo — Dashboard de agua en Power BI
+### BTI Guatemala · Versión corregida, dinámica y sin errores
+
+> Este documento reemplaza a todos los anteriores. Sigue los pasos en orden.
+
+---
+
+## Lo único que tienes que cambiar
+
+| Qué | Dónde | Valor |
+|---|---|---|
+| La dirección del sitio | Parámetro `pSitio` (Paso 2) | `https://intecapedu.sharepoint.com/sites/TOMATE` |
+| El ajuste de zona horaria | Parámetro `pAjusteHoras` (Paso 2) | `-6`, y lo verificas en el Paso 7 |
+
+Nada más. La dirección se escribe **una sola vez**; las tres listas la toman de ahí. Si mañana mueven las listas a otro sitio, cambias el parámetro y listo.
+
+---
+
+# PASO 1 · Abrir el editor
+
+Power BI Desktop → archivo nuevo → **Inicio → Transformar datos**.
+
+Se abre el *Editor de Power Query*. Los pasos 2 al 12 se hacen todos aquí adentro.
+
+---
+
+# PASO 2 · Los 4 parámetros
+
+**Inicio → Administrar parámetros → Nuevo parámetro.** Llena y presiona **Nuevo** para el siguiente. Al terminar, **Aceptar**.
+
+| Nombre | Tipo | Valor actual |
+|---|---|---|
+| `pSitio` | Texto | `https://intecapedu.sharepoint.com/sites/TOMATE` |
+| `pAjusteHoras` | Número decimal | `-6` |
+| `pLimiteConsumoM3` | Número entero | `20000` |
+| `pMetodoNaves` | Texto | `Promedio` |
+
+---
+
+# PASO 3 · Las 3 funciones
+
+Para cada una: **Inicio → Nuevo origen → Consulta en blanco** → clic derecho sobre ella → **Editor avanzado** → borra todo → pega → **Aceptar** → clic derecho sobre el nombre → **Cambiar nombre**.
+
+Queda bien cuando el ícono cambia a **fx**.
+
+**`fnFechaSP`**
+```m
+(entrada as any) as nullable date =>
+let
+    reloj =
+        if entrada = null then null
+        else if Value.Is(entrada, type datetimezone) then DateTimeZone.RemoveZone(entrada)
+        else if Value.Is(entrada, type datetime) then entrada
+        else if Value.Is(entrada, type date) then DateTime.From(entrada)
+        else try DateTime.From(entrada) otherwise null,
+    soloFecha = reloj <> null and DateTime.Time(reloj) = #time(0,0,0),
+    ajustada = if reloj = null then null
+               else if soloFecha then reloj
+               else reloj + #duration(0, pAjusteHoras, 0, 0),
+    salida = if ajustada = null then null else DateTime.Date(ajustada)
+in
+    salida
+```
+
+**`fnTextoANumero`**
+```m
+(entrada as any) as nullable number =>
+let
+    txt = if entrada = null then null else Text.Trim(Text.From(entrada)),
+    sinMiles = if txt = null then null else Text.Replace(Text.Replace(txt, ",", ""), " ", ""),
+    limpio = if sinMiles = null or sinMiles = "" then null
+             else Text.Select(sinMiles, {"0".."9", ".", "-"}),
+    salida = if limpio = null or limpio = "" then null
+             else try Number.FromText(limpio) otherwise null
+in
+    salida
+```
+
+**`fnNormalizaInv`**
+```m
+(entrada as any) as nullable text =>
+let
+    salida = if entrada = null then null else Text.Upper(Text.Trim(Text.From(entrada)))
+in
+    salida
+```
+
+---
+
+# PASO 4 · dCalendario
+
+Consulta en blanco → Editor avanzado → pegar → renombrar a **`dCalendario`**.
+
+Se genera hasta diciembre del año siguiente y avanza sola con el tiempo. **Aquí está la mitad de lo dinámico del tablero.**
+
+```m
+let
+    Inicio = #date(2026, 1, 1),
+    Fin    = #date(Date.Year(DateTime.LocalNow()) + 1, 12, 31),
+    Lista  = List.Dates(Inicio, Duration.Days(Fin - Inicio) + 1, #duration(1,0,0,0)),
+    Tabla  = Table.TransformColumnTypes(
+                Table.FromList(Lista, Splitter.SplitByNothing(), {"Fecha"}), {{"Fecha", type date}}),
+    Anio   = Table.AddColumn(Tabla,  "Anio",     each Date.Year([Fecha]), Int64.Type),
+    NumMes = Table.AddColumn(Anio,   "NumMes",   each Date.Month([Fecha]), Int64.Type),
+    Mes    = Table.AddColumn(NumMes, "Mes",      each Text.Proper(Date.ToText([Fecha], "MMMM", "es-GT")), type text),
+    AnioMes= Table.AddColumn(Mes,    "AnioMes",  each Date.ToText([Fecha], "yyyy-MM"), type text),
+    OrdMes = Table.AddColumn(AnioMes,"OrdenMes", each Date.Year([Fecha]) * 100 + Date.Month([Fecha]), Int64.Type),
+    IniSem = Table.AddColumn(OrdMes, "InicioSemana", each Date.StartOfWeek([Fecha], Day.Monday), type date),
+    Jueves = Table.AddColumn(IniSem, "Jueves", each Date.AddDays([InicioSemana], 3), type date),
+    SemISO = Table.AddColumn(Jueves, "SemanaISO",
+                each Number.RoundDown(Duration.Days([Jueves] - #date(Date.Year([Jueves]),1,1)) / 7) + 1, Int64.Type),
+    AnioISO= Table.AddColumn(SemISO, "AnioISO", each Date.Year([Jueves]), Int64.Type),
+    Etiq   = Table.AddColumn(AnioISO,"AnioSemana",
+                each Text.From([AnioISO]) & "-S" & Text.PadStart(Text.From([SemanaISO]), 2, "0"), type text),
+    OrdSem = Table.AddColumn(Etiq,   "OrdenSemana", each [AnioISO] * 100 + [SemanaISO], Int64.Type),
+    Final  = Table.RemoveColumns(OrdSem, {"Jueves"})
+in
+    Final
+```
+
+---
+
+# PASO 5 · Los 4 catálogos
+
+Cada uno: consulta en blanco → Editor avanzado → pegar → renombrar.
+
+**`dEquipo`** — el catálogo manda sobre el registro. Aquí CONT06 queda fijo como Salida CNP y BOMB01 marcado para excluirse.
+```m
+let
+    Origen = Table.FromRows({
+    {"CONT01","B.Principal","A-Principal","No Tratada","Produccion","Tanque 0","Produccion",null,true},
+    {"CONT02","B.Auxiliar","A-Principal","No Tratada","Produccion","Tanque 0","Produccion",null,true},
+    {"CONT03","Clarificador 1 Salida","A-Principal","Clarificada","Produccion","Tanque 0/1-3","Tratamiento","CONT01",true},
+    {"CONT04","Clarificador 2 Entrada","A-Principal","No Tratada","Produccion","Tanque 1-3","Tratamiento","CONT01",true},
+    {"CONT05","Clarificador 2 Salida","A-Principal","Clarificada","Produccion","Tanque 1-3","Tratamiento","CONT04",true},
+    {"CONT06","Salida CNP","A-Principal","Clarificada","Consumo","CNP","Distribucion","CONT05",true},
+    {"CONT07","Salida RD","A-Principal","Clarificada","Consumo","RD","Distribucion","CONT05",true},
+    {"CONT08","Agua de servicios","A-Principal","Clarificada","Consumo","Agua de servicios","Consumo final","CONT05",true},
+    {"CONT09","P. Mayores","A-Principal","Clarificada","Consumo","Procesos","Consumo final","CONT07",true},
+    {"CONT10","Pozo","C-Pozo","No Tratada","Produccion","Invernaderos","Fuente",null,true},
+    {"CONT11","Presa Campo Abierto","D-Campo abierto","No Tratada","Produccion","Campo Abierto","Fuente",null,true},
+    {"CONT12","Campo Abierto","D-Campo abierto","No Tratada","Consumo","Campo Abierto","Consumo final","CONT11",true},
+    {"CONT13","Areas Verdes Sustituto","E-Areas Verdes","No Tratada","Consumo","Oficinas","Consumo final",null,true},
+    {"BOMB01","Bombeo Principal","A-Principal","No Tratada","Produccion","RD","Fuente",null,false}
+    }, {"ID_EQUIPO","DESCRIPCION","SISTEMA","TIPOAGUA","CATEGORIA","DISTRIBUCION","ROL","EQUIPO_PADRE","INCLUIR_EN_BALANCE"}),
+    Tipos = Table.TransformColumnTypes(Origen, {{"ID_EQUIPO", type text},{"DESCRIPCION", type text},
+      {"SISTEMA", type text},{"TIPOAGUA", type text},{"CATEGORIA", type text},{"DISTRIBUCION", type text},
+      {"ROL", type text},{"EQUIPO_PADRE", type text},{"INCLUIR_EN_BALANCE", type logical}})
+in
+    Tipos
+```
+
+**`dInvernadero`**
+```m
+let
+    Origen = Table.FromRows({
+        {"1","RD",4},{"2","RD",3},{"3A","RD",4},{"3B","RD",3},{"4","RD",4},{"5","RD",3},{"6","RD",4},
+        {"7","RD",2},{"8","RD",4},{"9","RD",4},{"10","RD",4},{"11","RD",4},{"12","RD",3},{"13","RD",3},
+        {"14","RD",3},{"15","RD",2},{"16","RD",3},{"17","RD",3},{"18","RD",3},{"19","RD",3},{"20","RD",4},
+        {"21","RD",4},{"22","RD",4},{"23","RD",1},{"24","RD",1},
+        {"N1","CNP",1},{"N2","CNP",1},{"N3","CNP",1},{"N4","CNP",1},{"N5","CNP",1},{"N6","CNP",1},
+        {"N7","CNP",1},{"N8","CNP",1},{"N9","CNP",1},
+        {"P1","CNP",1},{"P2","CNP",2},{"P3","CNP",2},{"P4","CNP",1},{"P5","CNP",2},{"P6","CNP",2}
+    }, {"ID_INV","SITIO","NAVES"}),
+    Equipo = Table.AddColumn(Origen, "EQUIPO_SUMINISTRO",
+                each if [SITIO] = "CNP" then "CONT06" else "CONT07", type text),
+    Tipos  = Table.TransformColumnTypes(Equipo,
+                {{"ID_INV", type text},{"SITIO", type text},{"NAVES", Int64.Type}})
+in
+    Tipos
+```
+
+**`dCultivo`**
+```m
+let
+    Origen = Table.FromRows({
+        {"Cucumber","Pepino",116,16,46,61,101,116},
+        {"Melon","Melon",90,14,44,54,78,88},
+        {"Watermelon","Sandia",108,18,48,63,93,108},
+        {"Pepper","Chile",120,33,60,72,108,120},
+        {"Tomato","Tomate",120,28,58,68,108,120},
+        {"Tomato Cherry","Tomate",90,28,52,62,80,90}
+    }, {"Crop","CultivoES","DiasCiclo","DiaTrasplante","DiaIniPol","DiaFinPol","DiaIniCos","DiaFinCos"}),
+    A = Table.AddColumn(Origen,"DiasEnInvernadero", each [DiasCiclo]-[DiaTrasplante], Int64.Type),
+    B = Table.AddColumn(A,"DDT_IniPol", each [DiaIniPol]-[DiaTrasplante], Int64.Type),
+    C = Table.AddColumn(B,"DDT_FinPol", each [DiaFinPol]-[DiaTrasplante], Int64.Type),
+    D = Table.AddColumn(C,"DDT_IniCos", each [DiaIniCos]-[DiaTrasplante], Int64.Type),
+    E = Table.AddColumn(D,"DDT_FinCos", each [DiaFinCos]-[DiaTrasplante], Int64.Type)
+in
+    E
+```
+
+**`dEtapa`**
+```m
+let
+    Origen = Table.FromRows({{"Vegetativa",1},{"Polinizacion",2},{"Llenado de fruto",3},
+                             {"Cosecha",4},{"Post-cosecha",5}}, {"Etapa","OrdenEtapa"}),
+    Tipos  = Table.TransformColumnTypes(Origen, {{"Etapa", type text},{"OrdenEtapa", Int64.Type}})
+in
+    Tipos
+```
+
+---
+
+# PASO 6 · Conectar las 3 listas
+
+**Inicio → Nuevo origen → Más → SharePoint → Lista de SharePoint Online** → pega la dirección del sitio → **Implementación 2.0** → si pide credenciales, **Cuenta profesional o educativa** → marca `REGISTROS_AGUA`, `CONSUMOAGUAINVERNADEROS`, `PLANTAS` → **Transformar datos**.
+
+Van a llegar tres consultas. A cada una le entras al **Editor avanzado** y le pegas el código de abajo. **Ninguna columna tuya se renombra**: solo cambia el tipo de dato y se agregan columnas nuevas al final.
+
+## 6.1 `REGISTROS_AGUA`
+
+```m
+let
+    Origen = SharePoint.Tables(pSitio, [Implementation="2.0", ViewMode="All"]),
+    Lista  = Origen{[Title="REGISTROS_AGUA"]}[Items],
+    Cols   = Table.SelectColumns(Lista, {"ID_EQUIPO","FECHA_LECTURA","LECTURA_ANTERIOR","LECTURA_ACTUAL",
+             "CONSUMO_M3","TIPOAGUA","AREA","METODO_REGISTRO","DESCRIPCION","DETALLE","CATEGORIA",
+             "DISTRIBUCION","SISTEMA"}),
+
+    Limpio = Table.TransformColumns(Cols, {
+                {"ID_EQUIPO",        each Text.Upper(Text.Trim(Text.From(_))), type text},
+                {"FECHA_LECTURA",    each fnFechaSP(_), type date},
+                {"LECTURA_ANTERIOR", each fnTextoANumero(_), type number},
+                {"LECTURA_ACTUAL",   each fnTextoANumero(_), type number},
+                {"CONSUMO_M3",       each fnTextoANumero(_), type number}}),
+
+    ConFecha = Table.SelectRows(Limpio, each [FECHA_LECTURA] <> null),
+
+    // UNA lectura por contador y dia = el dato mas alto
+    PorDia = Table.Group(ConFecha, {"ID_EQUIPO","FECHA_LECTURA"}, {
+                {"LECTURA_ACTUAL",   each List.Max([LECTURA_ACTUAL]), type number},
+                {"LECTURA_ANTERIOR", each List.Min([LECTURA_ANTERIOR]), type number},
+                {"CONSUMO_M3",       each List.Sum([CONSUMO_M3]), type number},
+                {"Lecturas_Del_Dia", each Table.RowCount(_), Int64.Type},
+                {"TIPOAGUA",         each List.First([TIPOAGUA]), type text},
+                {"AREA",             each List.First([AREA]), type text},
+                {"METODO_REGISTRO",  each List.First([METODO_REGISTRO]), type text},
+                {"DESCRIPCION",      each List.First([DESCRIPCION]), type text},
+                {"DETALLE",          each List.First([DETALLE]), type text},
+                {"CATEGORIA",        each List.First([CATEGORIA]), type text},
+                {"DISTRIBUCION",     each List.First([DISTRIBUCION]), type text},
+                {"SISTEMA",          each List.First([SISTEMA]), type text}}),
+
+    Positivas = Table.SelectRows(PorDia, each [LECTURA_ACTUAL] <> null and [LECTURA_ACTUAL] > 0),
+
+    // consumo contra la ULTIMA LECTURA BUENA
+    PorEquipo = Table.Group(Positivas, {"ID_EQUIPO"}, {{"t", each
+        let
+            t0    = Table.Sort(_, {{"FECHA_LECTURA", Order.Ascending}}),
+            filas = Table.ToRecords(t0),
+            proc  = List.Accumulate(filas, [ult = null, acc = {}], (e, f) =>
+                let
+                    dif  = if e[ult] = null then null else f[LECTURA_ACTUAL] - e[ult][LECTURA_ACTUAL],
+                    malo = dif <> null and (dif < 0 or dif > pLimiteConsumoM3),
+                    reg  = f & [
+                        Lectura_Previa  = if e[ult] = null then null else e[ult][LECTURA_ACTUAL],
+                        Fecha_Previa    = if e[ult] = null then null else e[ult][FECHA_LECTURA],
+                        M3_Final        = if malo or dif = null then null else dif,
+                        Motivo_Anomalia = if malo then (if dif < 0 then "Retroceso de lectura"
+                                                        else "Consumo fuera de rango") else null]
+                in
+                    [ ult = if malo then e[ult] else f, acc = e[acc] & {reg} ]),
+            salida = Table.FromRecords(proc[acc])
+        in
+            salida, type table}}),
+
+    Plano  = Table.ExpandTableColumn(PorEquipo, "t",
+                {"FECHA_LECTURA","LECTURA_ACTUAL","LECTURA_ANTERIOR","CONSUMO_M3","Lecturas_Del_Dia",
+                 "TIPOAGUA","AREA","METODO_REGISTRO","DESCRIPCION","DETALLE","CATEGORIA","DISTRIBUCION",
+                 "SISTEMA","Lectura_Previa","Fecha_Previa","M3_Final","Motivo_Anomalia"}),
+
+    Dias   = Table.AddColumn(Plano, "Dias_Periodo", each
+                if [Fecha_Previa] = null then null
+                else List.Max({Duration.Days([FECHA_LECTURA] - [Fecha_Previa]), 1}), Int64.Type),
+    Valido = Table.AddColumn(Dias, "Es_Valido", each [Motivo_Anomalia] = null, type logical),
+    Tipos  = Table.TransformColumnTypes(Valido, {{"FECHA_LECTURA", type date},{"Fecha_Previa", type date},
+                {"M3_Final", type number},{"Lectura_Previa", type number},{"Motivo_Anomalia", type text}})
+in
+    Tipos
+```
+
+## 6.2 `CONSUMOAGUAINVERNADEROS`
+
+```m
+let
+    Origen = SharePoint.Tables(pSitio, [Implementation="2.0", ViewMode="All"]),
+    Lista  = Origen{[Title="CONSUMOAGUAINVERNADEROS"]}[Items],
+    Cols   = Table.SelectColumns(Lista, {"Fecha de colecta de muestra","Invernadero","Volumen de gotero",
+             "Nave","Cultivo","pH gotero","CE gotero","Volumen drenaje","pH drenaje","CE drenaje"}),
+
+    SinDup = Table.Distinct(Cols),
+
+    Limpio = Table.TransformColumns(SinDup, {
+                {"Fecha de colecta de muestra", each fnFechaSP(_), type date},
+                {"Invernadero",                 each fnNormalizaInv(_), type text},
+                {"Volumen de gotero",           each fnTextoANumero(_), type number},
+                {"Volumen drenaje",             each fnTextoANumero(_), type number},
+                {"Nave",                        each fnTextoANumero(_), Int64.Type},
+                {"Cultivo",                     each Text.Proper(Text.Trim(Text.From(_))), type text}}),
+
+    Valido = Table.AddColumn(Limpio, "ML_Valido", each
+                [Volumen de gotero] <> null and [Volumen de gotero] >= 1
+                and [Volumen de gotero] <= 10000 and [#"Fecha de colecta de muestra"] <> null, type logical)
+in
+    Valido
+```
+
+## 6.3 `PLANTAS`
+
+```m
+let
+    Origen = SharePoint.Tables(pSitio, [Implementation="2.0", ViewMode="All"]),
+    Lista  = Origen{[Title="PLANTAS"]}[Items],
+    Cols   = Table.SelectColumns(Lista, {"Crop","Program","Greenhouse","PlantsTransplanted",
+             "Expected transplanting date","Real  transplanting date","Real last harvest date",
+             "Expected Last harvest date","SetName"}),
+
+    Limpio = Table.TransformColumns(Cols, {
+                {"Greenhouse",         each fnNormalizaInv(_), type text},
+                {"Crop",               each Text.Trim(Text.From(_)), type text},
+                {"PlantsTransplanted", each fnTextoANumero(_), type number}}),
+
+    FIni   = Table.AddColumn(Limpio, "Fecha_Inicio", each
+                let r = fnFechaSP([#"Real  transplanting date"]),
+                    e = fnFechaSP([#"Expected transplanting date"])
+                in if r <> null then r else e, type date),
+    FinReg = Table.AddColumn(FIni, "Fin_Registrado", each
+                let r = fnFechaSP([#"Real last harvest date"]),
+                    e = fnFechaSP([#"Expected Last harvest date"])
+                in if r <> null then r else e, type date),
+
+    ConCic = Table.ExpandTableColumn(
+                Table.NestedJoin(FinReg, {"Crop"}, dCultivo, {"Crop"}, "c", JoinKind.LeftOuter),
+                "c", {"DiasEnInvernadero","DDT_IniPol","DDT_FinPol","DDT_IniCos","DDT_FinCos"}),
+
+    FFin   = Table.AddColumn(ConCic, "Fecha_Fin", each
+                if [Fin_Registrado] <> null then [Fin_Registrado]
+                else if [Fecha_Inicio] <> null and [DiasEnInvernadero] <> null
+                     then Date.AddDays([Fecha_Inicio], [DiasEnInvernadero]) else null, type date),
+
+    Orig   = Table.AddColumn(FFin, "Origen_Fechas", each
+                (if fnFechaSP([#"Real  transplanting date"]) <> null then "Trasplante real" else "Trasplante estimado")
+                & " / " &
+                (if fnFechaSP([#"Real last harvest date"]) <> null then "Cosecha real" else "Cosecha estimada"), type text),
+
+    Estado = Table.AddColumn(Orig, "Estado_Set", each
+                if [Fecha_Inicio] = null then "Sin fecha"
+                else if [Fecha_Inicio] > Date.From(DateTime.LocalNow()) then "Programado"
+                else if [Fecha_Fin] <> null and [Fecha_Fin] < Date.From(DateTime.LocalNow()) then "Finalizado"
+                else "Activo", type text),
+
+    Final  = Table.SelectRows(Estado, each
+                [Fecha_Inicio] <> null and [Fecha_Fin] <> null and [Fecha_Fin] >= [Fecha_Inicio]
+                and [PlantsTransplanted] <> null and [PlantsTransplanted] > 0
+                and [Greenhouse] <> null and [Crop] <> null)
+in
+    Final
+```
+
+---
+
+# PASO 7 · Verificar la fecha (30 segundos, no lo saltes)
+
+Selecciona `CONSUMOAGUAINVERNADEROS` en el panel izquierdo y haz clic en el **paso `Cols`** (antes de la limpieza). Mira la columna `Fecha de colecta de muestra`:
+
+- Si dice **22:00 o 23:00** → deja `pAjusteHoras = -6`. Correcto.
+- Si dice **16:00 o 17:00** → cambia `pAjusteHoras` a `0`. Ya viene convertida.
+
+Si te equivocas aquí, todo el consumo diario queda corrido un día y no lo vas a notar hasta que alguien compare contra la bitácora de campo.
+
+---
+
+# PASO 8 · Las 3 consultas derivadas
+
+## 8.1 `ConsumoGoteroDia`
+
+Consulta en blanco. Al terminar: **clic derecho sobre ella → desmarcar "Habilitar carga"** (es auxiliar, no va al modelo).
+
+```m
+let
+    Origen  = Table.SelectRows(CONSUMOAGUAINVERNADEROS, each [ML_Valido] = true),
+
+    // PASO 1 — misma nave, mismo dia: EL DATO MAS ALTO
+    PorNave = Table.Group(Origen, {"Invernadero","Nave","Fecha de colecta de muestra"},
+                {{"ML",  each List.Max([#"Volumen de gotero"]), type number},
+                 {"DRE", each List.Max([#"Volumen drenaje"]), type number},
+                 {"Repeticiones", each Table.RowCount(_), Int64.Type}}),
+
+    // PASO 2 — entre naves: promedio (o maximo, segun pMetodoNaves)
+    PorInv  = Table.Group(PorNave, {"Invernadero","Fecha de colecta de muestra"},
+                {{"ML_Planta_Dia",  each if pMetodoNaves = "Maximo" then List.Max([ML])
+                                         else List.Average([ML]), type number},
+                 {"ML_Drenaje_Dia", each if pMetodoNaves = "Maximo" then List.Max([DRE])
+                                         else List.Average([DRE]), type number},
+                 {"Naves_Medidas",  each Table.RowCount(_), Int64.Type}}),
+
+    Renom   = Table.RenameColumns(PorInv, {{"Fecha de colecta de muestra","Fecha"}}),
+    Tipos   = Table.TransformColumnTypes(Renom, {{"Fecha", type date},{"Invernadero", type text}})
+in
+    Tipos
+```
+
+## 8.2 `fAguaDiaria`
+
+```m
+let
+    Origen = Table.SelectRows(REGISTROS_AGUA, each [Es_Valido] = true
+                and [M3_Final] <> null and [M3_Final] > 0 and [Dias_Periodo] <> null),
+    ConEq  = Table.ExpandTableColumn(
+                Table.NestedJoin(Origen, {"ID_EQUIPO"}, dEquipo, {"ID_EQUIPO"}, "eq", JoinKind.Inner),
+                "eq", {"INCLUIR_EN_BALANCE"}),
+    Incluir= Table.SelectRows(ConEq, each [INCLUIR_EN_BALANCE] = true),
+    M3Dia  = Table.AddColumn(Incluir, "M3_Dia", each [M3_Final] / [Dias_Periodo], type number),
+    ListaF = Table.AddColumn(M3Dia, "Fecha", each
+                List.Dates(Date.AddDays([Fecha_Previa], 1),
+                           List.Max({[Dias_Periodo], 1}), #duration(1,0,0,0)), type list),
+    Expande= Table.ExpandListColumn(ListaF, "Fecha"),
+    Tipos  = Table.TransformColumnTypes(Expande, {{"Fecha", type date},{"M3_Dia", type number}}),
+    Final  = Table.SelectColumns(Tipos,
+                {"ID_EQUIPO","Fecha","M3_Dia","FECHA_LECTURA","Dias_Periodo","M3_Final"})
+in
+    Final
+```
+
+## 8.3 `fRiegoDia`
+
+```m
+let
+    // 1) un renglon por set y por dia del ciclo
+    Origen = PLANTAS,
+    ListaF = Table.AddColumn(Origen, "Fecha", each
+                List.Dates([Fecha_Inicio],
+                           List.Max({Duration.Days([Fecha_Fin] - [Fecha_Inicio]) + 1, 1}),
+                           #duration(1,0,0,0)), type list),
+    Expande= Table.ExpandListColumn(ListaF, "Fecha"),
+    TipoF  = Table.TransformColumnTypes(Expande, {{"Fecha", type date}}),
+    DDT    = Table.AddColumn(TipoF, "DDT", each Duration.Days([Fecha] - [Fecha_Inicio]), Int64.Type),
+
+    // 2) etapa fenologica, contada desde el trasplante
+    Etapa  = Table.AddColumn(DDT, "Etapa", each
+                if [DDT_IniPol] = null then "Sin ciclo definido"
+                else if [DDT] < [DDT_IniPol] then "Vegetativa"
+                else if [DDT] < [DDT_FinPol] then "Polinizacion"
+                else if [DDT] < [DDT_IniCos] then "Llenado de fruto"
+                else if [DDT] <= [DDT_FinCos] then "Cosecha"
+                else "Post-cosecha", type text),
+
+    // 3) mL medido del invernadero ese dia
+    ConML  = Table.ExpandTableColumn(
+                Table.NestedJoin(Etapa, {"Greenhouse","Fecha"}, ConsumoGoteroDia, {"Invernadero","Fecha"},
+                                 "m", JoinKind.LeftOuter),
+                "m", {"ML_Planta_Dia","ML_Drenaje_Dia","Naves_Medidas"}),
+
+    // 4) columnas auxiliares para interpolar
+    A1     = Table.AddColumn(ConML, "MLAnt",  each [ML_Planta_Dia], type number),
+    A2     = Table.AddColumn(A1,    "FecAnt", each if [ML_Planta_Dia] = null then null else [Fecha], type date),
+    A3     = Table.AddColumn(A2,    "MLSig",  each [ML_Planta_Dia], type number),
+    A4     = Table.AddColumn(A3,    "FecSig", each if [ML_Planta_Dia] = null then null else [Fecha], type date),
+
+    Reduce = Table.SelectColumns(A4, {"Fecha","Greenhouse","SetName","Crop","Program","PlantsTransplanted",
+                "DDT","Etapa","ML_Planta_Dia","ML_Drenaje_Dia","Naves_Medidas","Origen_Fechas","Estado_Set",
+                "MLAnt","FecAnt","MLSig","FecSig"}),
+
+    // 5) rellenar hacia atras y hacia adelante DENTRO de cada invernadero
+    Grupo  = Table.Group(Reduce, {"Greenhouse"}, {{"t", each
+                Table.FillUp(
+                    Table.FillDown(Table.Sort(_, {{"Fecha", Order.Ascending}}), {"MLAnt","FecAnt"}),
+                    {"MLSig","FecSig"}), type table}}),
+    Plano  = Table.ExpandTableColumn(Grupo, "t",
+                {"Fecha","SetName","Crop","Program","PlantsTransplanted","DDT","Etapa","ML_Planta_Dia",
+                 "ML_Drenaje_Dia","Naves_Medidas","Origen_Fechas","Estado_Set",
+                 "MLAnt","FecAnt","MLSig","FecSig"}),
+
+    // 6) interpolacion lineal: todos los dias del ciclo quedan con valor
+    MLUso  = Table.AddColumn(Plano, "ML_Usado", each
+                if [ML_Planta_Dia] <> null then [ML_Planta_Dia]
+                else if [MLAnt] <> null and [MLSig] <> null and [FecSig] <> [FecAnt] then
+                    [MLAnt] + ([MLSig] - [MLAnt])
+                            * Duration.Days([Fecha] - [FecAnt]) / Duration.Days([FecSig] - [FecAnt])
+                else if [MLAnt] <> null then [MLAnt]
+                else if [MLSig] <> null then [MLSig]
+                else null, type number),
+
+    Estado = Table.AddColumn(MLUso, "Estado_Dato", each
+                if [ML_Planta_Dia] <> null then "Medido"
+                else if [MLAnt] <> null and [MLSig] <> null then "Interpolado"
+                else if [ML_Usado] <> null then "Extendido"
+                else "Sin medicion en el ciclo", type text),
+
+    // 7) litros por set — el mL es por planta, asi que el reparto es exacto
+    Litros = Table.AddColumn(Estado, "Litros_Dia", each
+                if [ML_Usado] = null then 0 else [ML_Usado] * [PlantsTransplanted] / 1000, type number),
+    M3     = Table.AddColumn(Litros, "M3_Dia", each [Litros_Dia] / 1000, type number),
+    Dren   = Table.AddColumn(M3, "Litros_Drenaje_Dia", each
+                if [ML_Drenaje_Dia] = null then 0
+                else [ML_Drenaje_Dia] * [PlantsTransplanted] / 1000, type number),
+
+    Final  = Table.SelectColumns(Dren, {"Fecha","Greenhouse","SetName","Crop","Program",
+                "PlantsTransplanted","DDT","Etapa","ML_Usado","Estado_Dato","Naves_Medidas",
+                "Litros_Dia","M3_Dia","Litros_Drenaje_Dia","Origen_Fechas","Estado_Set"})
+in
+    Final
+```
+
+Ahora **Inicio → Cerrar y aplicar**.
+
+---
+
+# PASO 9 · Relaciones
+
+Vista **Modelo**. Arrastra de una columna a otra. Todas **1 a muchos, filtro cruzado Simple**.
+
+| Desde (uno) | Hacia (muchos) |
+|---|---|
+| `dCalendario[Fecha]` | `fAguaDiaria[Fecha]` |
+| `dCalendario[Fecha]` | `fRiegoDia[Fecha]` |
+| `dCalendario[Fecha]` | `REGISTROS_AGUA[FECHA_LECTURA]` |
+| `dEquipo[ID_EQUIPO]` | `fAguaDiaria[ID_EQUIPO]` |
+| `dEquipo[ID_EQUIPO]` | `REGISTROS_AGUA[ID_EQUIPO]` |
+| `dInvernadero[ID_INV]` | `fRiegoDia[Greenhouse]` |
+| `dCultivo[Crop]` | `fRiegoDia[Crop]` |
+| `dEtapa[Etapa]` | `fRiegoDia[Etapa]` |
+
+Después:
+- Clic derecho en `dCalendario` → **Marcar como tabla de fechas** → `Fecha`.
+- `dCalendario[Mes]` → **Herramientas de columnas → Ordenar por columna → NumMes**.
+- `dCalendario[AnioMes]` → ordenar por `OrdenMes`.
+- `dCalendario[AnioSemana]` → ordenar por `OrdenSemana`.
+- `dEtapa[Etapa]` → ordenar por `OrdenEtapa`.
+
+---
+
+# PASO 10 · Medidas
+
+**Inicio → Escribir datos** → una columna llamada `x` con un valor cualquiera → nombra la tabla `_Medidas` → Cargar. Luego oculta la columna `x`.
+
+Clic derecho en `_Medidas` → **Nueva medida** para cada una.
+
+```dax
+m3 Contador = SUM ( fAguaDiaria[M3_Dia] )
+
+m3 Produccion = CALCULATE ( [m3 Contador], dEquipo[CATEGORIA] = "Produccion" )
+m3 Consumo    = CALCULATE ( [m3 Contador], dEquipo[CATEGORIA] = "Consumo" )
+m3 Salida RD  = CALCULATE ( [m3 Contador], dEquipo[ID_EQUIPO] = "CONT07" )
+m3 Salida CNP = CALCULATE ( [m3 Contador], dEquipo[ID_EQUIPO] = "CONT06" )
+m3 P. Mayores = CALCULATE ( [m3 Contador], dEquipo[ID_EQUIPO] = "CONT09" )
+m3 Servicios  = CALCULATE ( [m3 Contador], dEquipo[ID_EQUIPO] = "CONT08" )
+
+Litros Riego = SUM ( fRiegoDia[Litros_Dia] )
+m3 Riego     = DIVIDE ( [Litros Riego], 1000 )
+m3 Riego RD  = CALCULATE ( [m3 Riego], dInvernadero[SITIO] = "RD" )
+m3 Riego CNP = CALCULATE ( [m3 Riego], dInvernadero[SITIO] = "CNP" )
+
+Plantas Dia       = SUM ( fRiegoDia[PlantsTransplanted] )
+Plantas al Cierre = CALCULATE ( SUM ( fRiegoDia[PlantsTransplanted] ), LASTDATE ( dCalendario[Fecha] ) )
+L por planta dia  = DIVIDE ( [Litros Riego], [Plantas Dia] )
+
+m3 Otras Areas RD =
+VAR S = [m3 Salida RD]
+RETURN IF ( S > 0, MAX ( S - [m3 Riego RD] - [m3 P. Mayores], 0 ) )
+
+% Invernaderos sobre Salida RD = DIVIDE ( [m3 Riego RD],       [m3 Salida RD] )
+% Extraccion sobre Salida RD   = DIVIDE ( [m3 P. Mayores],     [m3 Salida RD] )
+% Otras Areas sobre Salida RD  = DIVIDE ( [m3 Otras Areas RD], [m3 Salida RD] )
+
+% Dias Medidos =
+DIVIDE ( CALCULATE ( COUNTROWS ( fRiegoDia ), fRiegoDia[Estado_Dato] = "Medido" ), COUNTROWS ( fRiegoDia ) )
+
+Lecturas Anomalas = CALCULATE ( COUNTROWS ( REGISTROS_AGUA ), REGISTROS_AGUA[Es_Valido] = FALSE )
+Dias Promedio Entre Lecturas = AVERAGE ( fAguaDiaria[Dias_Periodo] )
+
+m3 Riego Periodo Anterior = CALCULATE ( [m3 Riego], DATEADD ( dCalendario[Fecha], -1, MONTH ) )
+Var % vs Periodo Anterior = DIVIDE ( [m3 Riego] - [m3 Riego Periodo Anterior], [m3 Riego Periodo Anterior] )
+```
+
+**Formato:** selecciona cada medida y en **Herramientas de medidas** pon 0 decimales para las de m³, 2 para `L por planta dia`, y **Porcentaje** para las que empiezan con `%`.
+
+Luego **Modelado → Nueva tabla** dos veces:
+
+```dax
+dDestinoRD =
+DATATABLE ( "Destino", STRING, "Orden", INTEGER,
+    { { "Invernaderos", 1 }, { "Extraccion de semillas", 2 }, { "Otras areas / perdidas", 3 } } )
+```
+```dax
+m3 por Destino RD =
+SWITCH ( SELECTEDVALUE ( dDestinoRD[Destino] ),
+    "Invernaderos",           [m3 Riego RD],
+    "Extraccion de semillas", [m3 P. Mayores],
+    "Otras areas / perdidas", [m3 Otras Areas RD] )
+```
+> La segunda es una **medida**, no una tabla. Va en `_Medidas`.
+
+Y el selector de granularidad — **Modelado → Nuevo parámetro → Campos**:
+```dax
+Granularidad = {
+    ( "Día",    NAMEOF ( 'dCalendario'[Fecha] ),      0 ),
+    ( "Semana", NAMEOF ( 'dCalendario'[AnioSemana] ), 1 ),
+    ( "Mes",    NAMEOF ( 'dCalendario'[AnioMes] ),    2 )
+}
+```
+Deja marcada la casilla **"Agregar segmentación a esta página"**.
+
+---
+
+# PASO 11 · El error que te está saliendo
+
+> *"No se puede mostrar la información visual... esto puede deberse a un problema de capacidad de licencia."*
+
+**No es la licencia.** Ese mensaje aparece cuando la consulta del visual se cae o consume demasiada memoria. En este modelo tiene tres causas posibles, en orden de probabilidad:
+
+**Causa 1 — la medida con `FILTER` sobre toda la tabla de hechos.** La versión anterior de `Plantas Dia` era:
+```dax
+Plantas Dia = CALCULATE ( SUM ( fRiegoDia[PlantsTransplanted] ), FILTER ( fRiegoDia, ... ) )
+```
+Ese `FILTER` materializa la tabla completa en memoria para cada celda del visual. Con cientos de miles de filas, revienta. **En el Paso 10 ya está corregida**: como después de la interpolación todos los días tienen valor, basta `SUM`. Borra la medida vieja y crea la nueva.
+
+**Causa 2 — poner columnas de la tabla de hechos en los ejes.** Si en el eje X pones `fRiegoDia[Fecha]` en vez de `dCalendario[Fecha]`, Power BI arma un producto cartesiano. **Regla: en ejes y leyendas van solo columnas de las tablas `d…`** (`dCalendario`, `dInvernadero`, `dCultivo`, `dEtapa`, `dEquipo`). La única excepción es `fRiegoDia[DDT]`, que tiene apenas 120 valores distintos.
+
+**Causa 3 — falta una relación.** Si el visual mezcla `[m3 Riego]` con `dEquipo`, y no hay relación entre ambos, el resultado no está definido. Revisa el Paso 9.
+
+Si el mensaje persiste en un visual específico, quítale campos uno por uno hasta que cargue: el último que quitaste es el culpable.
+
+---
+
+# PASO 12 · Las páginas
+
+Todo lo de abajo es dinámico. Al cargar agosto, aparece solo.
+
+## Página 1 · Resumen ejecutivo
+
+| Visual | Configuración |
+|---|---|
+| **Tarjeta** ×6 | `[m3 Produccion]`, `[m3 Consumo]`, `[m3 Salida RD]`, `[m3 Riego]`, `[L por planta dia]`, `[% Dias Medidos]` |
+| **Gráfico de áreas apiladas** | Eje X `dCalendario[Fecha]` · Leyenda `dEquipo[DESCRIPCION]` · Eje Y `[m3 Contador]` |
+| **Gráfico de anillos** | Leyenda `dDestinoRD[Destino]` · Valores `[m3 por Destino RD]` |
+| **Columnas agrupadas** | Eje X `dCalendario[AnioMes]` · Eje Y `[m3 Produccion]` y `[m3 Consumo]` |
+| **Columnas apiladas** | Eje X `dCalendario[AnioMes]` · Leyenda `dInvernadero[SITIO]` · Eje Y `[m3 Riego]` |
+| **Segmentaciones** | `dCalendario[AnioMes]` (estilo Mosaico), `dInvernadero[SITIO]` |
+
+> **Cuándo áreas y cuándo barras.** Área = magnitud continua en el tiempo, donde importa el volumen bajo la curva. Barras = comparar categorías (contador contra contador, mes contra mes). Anillo = partes de un todo, máximo 5 categorías.
+
+## Página 2 · Balance por sistema
+
+| Visual | Configuración |
+|---|---|
+| **Matriz** | Filas: `dEquipo[SISTEMA]`, `[CATEGORIA]`, `[TIPOAGUA]`, `[DESCRIPCION]` · Valores: `[m3 Contador]` dos veces, y a la segunda clic derecho → **Mostrar valor como → Porcentaje del total general** |
+| **Árbol de descomposición** | Analizar `[m3 Contador]` · Explicar por `dEquipo[SISTEMA]`, `[ROL]`, `[DESCRIPCION]` |
+| **Barras horizontales** | Eje Y `dEquipo[TIPOAGUA]` · Eje X `[m3 Contador]` |
+| **Barras horizontales** | Eje Y `dEquipo[CATEGORIA]` · Eje X `[m3 Contador]` |
+
+## Página 3 · Distribución de Salida RD
+
+| Visual | Configuración |
+|---|---|
+| **Anillo** | Leyenda `dDestinoRD[Destino]` · Valores `[m3 por Destino RD]` · Etiquetas: Categoría y porcentaje |
+| **Cascada** | Categoría `dDestinoRD[Destino]` · Eje Y `[m3 por Destino RD]` |
+| **Columnas apiladas 100%** | Eje X `dCalendario[AnioMes]` · Leyenda `dDestinoRD[Destino]` · Eje Y `[m3 por Destino RD]` |
+| **Tabla** | `dCalendario[AnioMes]`, `[m3 Salida RD]`, `[m3 Riego RD]`, `[% Invernaderos sobre Salida RD]`, `[m3 P. Mayores]`, `[% Extraccion sobre Salida RD]`, `[m3 Otras Areas RD]`, `[% Otras Areas sobre Salida RD]` |
+
+## Página 4 · Consumo por invernadero
+
+| Visual | Configuración |
+|---|---|
+| **Gráfico de áreas** | Eje X **`Granularidad`** · Eje Y `[m3 Salida RD]`, `[m3 Riego RD]`, `[m3 P. Mayores]` — con la segmentación de `Granularidad` cambias entre día, semana y mes |
+| **Barras horizontales** | Eje Y `dInvernadero[ID_INV]` · Eje X `[m3 Riego]` · ordenar descendente |
+| **Barras horizontales** | Eje Y `dInvernadero[ID_INV]` · Eje X `[L por planta dia]` · **Formato → Barras → Color → fx → Reglas**: rojo si >3 o <0.3 |
+| **Matriz mapa de calor** | Filas `dInvernadero[ID_INV]` · Columnas `dCalendario[AnioSemana]` · Valores `[m3 Riego]` · **Formato → Elementos de celda → Color de fondo** |
+| **Tabla** | `fRiegoDia[SetName]`, `[Crop]`, `[Program]`, `[Estado_Set]`, `[Origen_Fechas]`, `[Plantas al Cierre]`, `[m3 Riego]` |
+
+## Página 5 · Etapa fenológica
+
+| Visual | Configuración |
+|---|---|
+| **Líneas** | Eje X `fRiegoDia[DDT]` · Leyenda `dCultivo[Crop]` · Eje Y `[L por planta dia]` — es la curva de demanda hídrica del ciclo |
+| **Columnas agrupadas** | Eje X `dEtapa[Etapa]` · Leyenda `dCultivo[Crop]` · Eje Y `[L por planta dia]` |
+| **Matriz** | Filas `dCultivo[Crop]` · Columnas `dEtapa[Etapa]` · Valores `[L por planta dia]` |
+
+## Página 6 · Calidad de datos
+
+| Visual | Configuración |
+|---|---|
+| **Tabla** | `REGISTROS_AGUA[ID_EQUIPO]`, `[FECHA_LECTURA]`, `[Lectura_Previa]`, `[LECTURA_ACTUAL]`, `[Motivo_Anomalia]` · filtro del visual: `Es_Valido` = Falso |
+| **Barras horizontales** | Eje Y `dEquipo[DESCRIPCION]` · Eje X `[Dias Promedio Entre Lecturas]` |
+| **Barras horizontales** | Eje Y `fRiegoDia[Estado_Dato]` · Eje X `Recuento de fRiegoDia` |
+| **Matriz** | Filas `dInvernadero[ID_INV]` · Columnas `dCalendario[AnioMes]` · Valores `[% Dias Medidos]` · con **iconos** condicionales |
+
+---
+
+# PASO 13 · Validar antes de publicar
+
+| Qué revisar | Resultado esperado |
+|---|---|
+| `[Lecturas Anomalas]` | **2** — la lectura en cero de CONT07 del 22/05 y los 3,274,190 del 24/07 |
+| Filas de `fRiegoDia` con `Estado_Dato = "Sin medicion en el ciclo"` | **0** |
+| `[m3 Riego RD] + [m3 P. Mayores] ≤ [m3 Salida RD]` | Se cumple en todos los meses |
+| `[L por planta dia]` | Entre 0.3 y 3.0 en cualquier cultivo y etapa |
+| `[m3 Produccion] ≥ [m3 Consumo]` | En el sistema A-Principal |
+
+**Actualización programada** (una vez publicado en el servicio): configura dos refrescos, 6:00 y 18:00.
+
+> Si `PLANTAS` todavía está vacía, `fRiegoDia` va a cargar sin filas y las medidas de riego saldrán en blanco. Es normal: el modelo queda armado y se llena solo cuando carguen los sets.
