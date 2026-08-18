@@ -1,0 +1,359 @@
+# Correcciones — modelo de agua en Power BI
+### Diagnóstico de lo que vi en tus capturas y qué cambiar exactamente
+
+---
+
+## Resumen: 6 problemas, 6 correcciones
+
+| # | Problema | Dónde lo vi | Corrección |
+|---|---|---|---|
+| 1 | **Rutas de acceso ambiguas** entre `dEquipo` y `dCalendario` | Captura del error de relación | Cambiar la dirección de filtro cruzado de **Ambas → Único** |
+| 2 | **`L por planta dia` falla** con el mensaje de licencia | Reportado por ti | Es consecuencia del #1, más la medida con `FILTER`. Se corrige con una columna nueva |
+| 3 | **`Greenhouse` viene como `N 1`, con espacio adentro** | Captura de la relación `fRiegoDia` | `fnNormalizaInv` debe quitar espacios internos, no solo los de las orillas |
+| 4 | **`Crop` viene como `Tomato cherry`**, con c minúscula | Misma captura: `Etapa = "Sin ciclo definido"`, `DDT = 0` | Normalizar con `Text.Proper` en PLANTAS |
+| 5 | **`Expected transplanting date` no existe** en la lista real | Capturas de PLANTAS: las columnas son Crop, Program, Greenhouse, PlantsTransplanted, Real transplanting, Real last harvest, Expected Last harvest, SetName | Buscar las columnas por patrón, no por nombre exacto |
+| 6 | **Falta el análisis de CNP y de Agua de servicios** | Reportado por ti | Tabla `dDestino` con los 3 circuitos y 6 destinos |
+
+Los problemas 3, 4 y 5 explican tus "vacíos": en la captura de `fRiegoDia` se ve `Estado_Dato = "Sin medicion en el ciclo"`, `Etapa = "Sin ciclo definido"` y `DDT = 0` en todas las filas. **No es un problema de fechas: es que las llaves de texto no cruzan.**
+
+---
+
+## 1 · El error de rutas ambiguas
+
+El mensaje exacto de tu captura:
+
+> *Hay rutas de acceso ambiguas entre 'dEquipo' y 'dCalendario': 'dEquipo'→'REGISTROS_AGUA'→'dCalendario' y 'dEquipo'→'fAguaDiaria'→'dCalendario'*
+
+**Causa:** en la relación `fAguaDiaria → dEquipo` dejaste **Dirección de filtro cruzado: Ambas**. Con filtro bidireccional, `dEquipo` puede llegar a `dCalendario` por dos caminos distintos y el motor no sabe cuál usar. Con filtro simple no hay ambigüedad, aunque las dos tablas de hechos cuelguen del mismo calendario — eso es un esquema de estrella normal y correcto.
+
+**Corrección.** Vista **Modelo** → doble clic en cada relación → **Dirección de filtro cruzado: Único** → Guardar. Revisa las 8, en especial estas dos:
+
+| Relación | Cardinalidad | Dirección |
+|---|---|---|
+| `fAguaDiaria` → `dEquipo` | Varios a uno (*:1) | **Único** |
+| `REGISTROS_AGUA` → `dEquipo` | Varios a uno (*:1) | **Único** |
+| `fAguaDiaria` → `dCalendario` | Varios a uno (*:1) | **Único** |
+| `REGISTROS_AGUA` → `dCalendario` | Varios a uno (*:1) | **Único** |
+| `fRiegoDia` → `dCalendario` | Varios a uno (*:1) | **Único** |
+| `fRiegoDia` → `dInvernadero` | Varios a uno (*:1) | **Único** |
+| `fRiegoDia` → `dCultivo` | Varios a uno (*:1) | **Único** |
+| `fRiegoDia` → `dEtapa` | Varios a uno (*:1) | **Único** |
+
+Ninguna relación de este modelo necesita filtro bidireccional.
+
+---
+
+## 2 · El error de `L por planta dia`
+
+Ese mensaje de "capacidad de licencia" es genérico: aparece cuando la consulta del visual **falla**, sin importar el motivo. Con la ambigüedad del punto 1 presente, cualquier medida que mezcle `fRiegoDia` con `dEquipo` o con el calendario truena. **Arregla primero el punto 1 y vuelve a probar.**
+
+Además hay que quitar el `FILTER`. La solución limpia es una columna en Power Query, no una medida.
+
+**En `fRiegoDia`**, agrega esta columna justo después del paso `Litros`:
+
+```m
+    PlantasAgua = Table.AddColumn(Litros, "Plantas_Con_Agua", each
+                     if [ML_Usado] = null then 0 else [PlantsTransplanted], Int64.Type),
+```
+
+Y agrega `"Plantas_Con_Agua"` a la lista del `Table.SelectColumns` final.
+
+Luego, en las medidas:
+
+```dax
+Plantas Dia = SUM ( fRiegoDia[Plantas_Con_Agua] )
+
+L por planta dia = DIVIDE ( [Litros Riego], [Plantas Dia] )
+```
+
+Sin `FILTER`, sin recorrer la tabla completa. Y de paso corrige un sesgo: antes, un invernadero sin medición aportaba plantas al denominador pero cero litros al numerador, y te bajaba artificialmente el promedio.
+
+---
+
+## 3 · `fnNormalizaInv` — el espacio interno
+
+En tu captura de `fRiegoDia` la columna `Greenhouse` dice **`N 1`**. En `CONSUMOAGUAINVERNADEROS` dice **`N2`**, sin espacio. Por eso ningún invernadero de CNP cruza y todo sale como "Sin medición en el ciclo".
+
+**Reemplaza la función completa:**
+
+```m
+(entrada as any) as nullable text =>
+let
+    txt = if entrada = null then null else Text.From(entrada),
+    // quita TODOS los espacios, incluidos los de adentro: "N 1" -> "N1"
+    sinEspacios = if txt = null then null
+                  else Text.Remove(Text.Upper(Text.Trim(txt)), {" ", Character.FromNumber(160)}),
+    // quita ceros a la izquierda en los numericos: "08" -> "8"
+    salida = if sinEspacios = null or sinEspacios = "" then null
+             else if Text.Length(sinEspacios) > 1 and Text.StartsWith(sinEspacios, "0")
+                  then Text.TrimStart(sinEspacios, "0")
+             else sinEspacios
+in
+    salida
+```
+
+Ya está aplicada en `PLANTAS[Greenhouse]` y en `CONSUMOAGUAINVERNADEROS[Invernadero]`, así que con cambiar la función se corrige en los dos lados.
+
+---
+
+## 4 · `Crop` con minúscula
+
+En la captura se ve `Tomato cherry`, y en `dCultivo` está `Tomato Cherry`. La unión falla, `DDT_IniPol` queda nulo, y por eso `Etapa = "Sin ciclo definido"` en todas las filas. Además `Fecha_Fin` no puede calcularse por ciclo cuando falta la fecha de cosecha.
+
+**En `PLANTAS`**, cambia el paso `Limpio`:
+
+```m
+    Limpio = Table.TransformColumns(Cols, {
+                {"Greenhouse",         each fnNormalizaInv(_), type text},
+                {"Crop",               each Text.Proper(Text.Trim(Text.From(_))), type text},
+                {"Program",            each Text.Upper(Text.Trim(Text.From(_))), type text},
+                {"PlantsTransplanted", each fnTextoANumero(_), type number}}),
+```
+
+`Text.Proper` convierte `Tomato cherry` → `Tomato Cherry`, `pepper` → `Pepper`, y no daña los que ya estaban bien.
+
+**En `dCultivo`**, por seguridad, agrega el mismo tratamiento al final:
+```m
+    Norm = Table.TransformColumns(E, {{"Crop", each Text.Proper(Text.Trim(_)), type text}})
+in
+    Norm
+```
+
+> Nota de tus datos: `Program` viene como `XZ`, `HJ`, `8T` — no como SSD/VTI. No importa para el cálculo, es solo una etiqueta de agrupación. Se usa tal cual.
+
+---
+
+## 5 · Las columnas de fecha de PLANTAS
+
+En tus capturas la lista tiene: **Crop, Program, Greenhouse, PlantsTransplanted, Real transplanting date, Real last harvest date, Expected Last harvest date, SetName**.
+
+**No existe `Expected transplanting date`.** Y el nombre `Real  transplanting date` puede tener uno o dos espacios según cómo se creó. Si el nombre no coincide exacto, la consulta o truena o te devuelve una columna de puros nulos — que es justo el "hay varios vacíos" que reportas.
+
+**La solución es no depender del nombre exacto.** Reemplaza el inicio de `PLANTAS` hasta el paso `FinReg`:
+
+```m
+let
+    Origen = SharePoint.Tables(pSitioPlantas, [Implementation="2.0", ViewMode="All"]),
+    Lista  = Origen{[Title="PLANTAS"]}[Items],
+
+    // --- localizar las columnas por patron, no por nombre exacto ---
+    N       = Table.ColumnNames(Lista),
+    Buscar  = (claves as list) as nullable text =>
+                List.First(List.Select(N, (c) =>
+                    List.AllTrue(List.Transform(claves, (k) => Text.Contains(Text.Lower(c), k)))), null),
+    cTrasR  = Buscar({"real", "transplant"}),
+    cTrasE  = Buscar({"expected", "transplant"}),
+    cCosR   = Buscar({"real", "harvest"}),
+    cCosE   = Buscar({"expected", "harvest"}),
+
+    Cols   = Table.SelectColumns(Lista,
+                List.RemoveNulls({"Crop","Program","Greenhouse","PlantsTransplanted","SetName",
+                                  cTrasR, cTrasE, cCosR, cCosE}), MissingField.UseNull),
+
+    Limpio = Table.TransformColumns(Cols, {
+                {"Greenhouse",         each fnNormalizaInv(_), type text},
+                {"Crop",               each Text.Proper(Text.Trim(Text.From(_))), type text},
+                {"Program",            each Text.Upper(Text.Trim(Text.From(_))), type text},
+                {"PlantsTransplanted", each fnTextoANumero(_), type number}}),
+
+    FIni   = Table.AddColumn(Limpio, "Fecha_Inicio", each
+                let r = if cTrasR = null then null else fnFechaSP(Record.FieldOrDefault(_, cTrasR, null)),
+                    e = if cTrasE = null then null else fnFechaSP(Record.FieldOrDefault(_, cTrasE, null))
+                in if r <> null then r else e, type date),
+
+    FinReg = Table.AddColumn(FIni, "Fin_Registrado", each
+                let r = if cCosR = null then null else fnFechaSP(Record.FieldOrDefault(_, cCosR, null)),
+                    e = if cCosE = null then null else fnFechaSP(Record.FieldOrDefault(_, cCosE, null))
+                in if r <> null then r else e, type date),
+```
+
+De ahí para abajo, el resto de `PLANTAS` queda igual (`ConCic`, `FFin`, `Orig`, `Estado`, `Final`), con dos ajustes en `Orig`:
+
+```m
+    Orig   = Table.AddColumn(FFin, "Origen_Fechas", each
+                (if cTrasR <> null and Record.FieldOrDefault(_, cTrasR, null) <> null
+                    then "Trasplante real" else "Trasplante estimado")
+                & " / " &
+                (if cCosR <> null and Record.FieldOrDefault(_, cCosR, null) <> null
+                    then "Cosecha real" else "Cosecha estimada"), type text),
+```
+
+### Consulta de control: qué filas se están cayendo
+
+Crea esta consulta para ver exactamente qué se descarta y por qué. Es la respuesta directa a tu "necesito verificar esa información":
+
+```m
+let
+    Origen = PLANTAS_Base,   // apunta al paso Estado de PLANTAS: clic derecho en PLANTAS -> Referencia
+    Motivo = Table.AddColumn(Origen, "Motivo_Descarte", each
+                if [Fecha_Inicio] = null then "Sin fecha de trasplante (ni real ni estimada)"
+                else if [Fecha_Fin] = null then "Sin fecha de cosecha y sin ciclo en dCultivo"
+                else if [Fecha_Fin] < [Fecha_Inicio] then "Cosecha anterior al trasplante"
+                else if [PlantsTransplanted] = null or [PlantsTransplanted] <= 0 then "Sin cantidad de plantas"
+                else if [Greenhouse] = null then "Sin invernadero"
+                else if [DiasEnInvernadero] = null then "Crop no existe en dCultivo: " & Text.From([Crop])
+                else null, type text),
+    Solo   = Table.SelectRows(Motivo, each [Motivo_Descarte] <> null)
+in
+    Solo
+```
+
+Si esa tabla sale vacía, ninguna fila se está perdiendo. Si sale con filas, el motivo te dice qué corregir en SharePoint.
+
+---
+
+## 6 · Dos sitios de SharePoint
+
+Agrega un parámetro más (**Inicio → Administrar parámetros → Nuevo**):
+
+| Nombre | Tipo | Valor |
+|---|---|---|
+| `pSitioPlantas` | Texto | la dirección del sitio donde está PLANTAS |
+
+Y en la primera línea de la consulta `PLANTAS`, `pSitio` → **`pSitioPlantas`** (ya está así en el código de arriba). `REGISTROS_AGUA` y `CONSUMOAGUAINVERNADEROS` siguen con `pSitio`. Al aplicar te va a pedir credenciales del segundo sitio: **Cuenta profesional o educativa**.
+
+---
+
+# 7 · El análisis que falta: los tres circuitos
+
+Tienes razón, solo estaba resuelto RD. Esta es la topología correcta según lo que me confirmas:
+
+```
+                        Agua clarificada (CONT03 + CONT05)
+                                    │
+                            Tanques 0 / 1-3
+                    ┌───────────────┼───────────────┐
+                    │               │               │
+            CONT07 Salida RD   CONT06 Salida CNP   CONT08 Agua de servicios
+                    │               │               │
+        ┌───────────┼─────────┐     ├──────────┐    └── uso final, no se reparte
+        │           │         │     │          │
+  Invernaderos  CONT09 P.  Otras   Invern.   Otras
+   1 – 24       Mayores    áreas   N1-N9     áreas
+  (sin contador)(medido)   (resto) P1-P6     CNP
+                                (sin contador)
+```
+
+Tres cosas que quedan claras con esto:
+
+- **Agua de servicios NO cuelga de Salida RD.** Sale de los tanques directo. Por eso no se resta del reparto de RD, y en `dEquipo` su `EQUIPO_PADRE` es `CONT05`, que ya está correcto.
+- **P. Mayores SÍ cuelga de Salida RD**, y es el único consumo medido dentro de ese circuito.
+- **CNP tiene su propio residual.** Salida CNP menos los invernaderos N y P es "otras áreas CNP", y hasta ahora ese número no se estaba calculando.
+
+## 7.1 Reemplaza `dDestinoRD` por `dDestino`
+
+Borra la tabla `dDestinoRD` y la medida `m3 por Destino RD`. **Modelado → Nueva tabla**:
+
+```dax
+dDestino =
+DATATABLE (
+    "Circuito", STRING, "Destino", STRING, "Orden", INTEGER,
+    {
+        { "RD",        "Invernaderos RD",           1 },
+        { "RD",        "Extraccion de semillas",    2 },
+        { "RD",        "Otras areas RD",            3 },
+        { "CNP",       "Invernaderos CNP",          4 },
+        { "CNP",       "Otras areas CNP",           5 },
+        { "Servicios", "Agua de servicios",         6 }
+    }
+)
+```
+
+Ordena `dDestino[Destino]` por `dDestino[Orden]` (Herramientas de columnas → Ordenar por columna). La tabla queda **desconectada**, sin relaciones. Es correcto: sirve solo de eje.
+
+## 7.2 Las medidas nuevas
+
+```dax
+-- circuito CNP
+m3 Otras Areas CNP =
+VAR S = [m3 Salida CNP]
+RETURN IF ( S > 0, MAX ( S - [m3 Riego CNP], 0 ) )
+
+% Invernaderos sobre Salida CNP = DIVIDE ( [m3 Riego CNP],       [m3 Salida CNP] )
+% Otras Areas sobre Salida CNP  = DIVIDE ( [m3 Otras Areas CNP], [m3 Salida CNP] )
+
+-- total distribuido por los tres contadores de salida
+m3 Distribuido = [m3 Salida RD] + [m3 Salida CNP] + [m3 Servicios]
+
+-- eje unico para los seis destinos
+m3 por Destino =
+SWITCH ( SELECTEDVALUE ( dDestino[Destino] ),
+    "Invernaderos RD",        [m3 Riego RD],
+    "Extraccion de semillas", [m3 P. Mayores],
+    "Otras areas RD",         [m3 Otras Areas RD],
+    "Invernaderos CNP",       [m3 Riego CNP],
+    "Otras areas CNP",        [m3 Otras Areas CNP],
+    "Agua de servicios",      [m3 Servicios] )
+
+-- el total del circuito al que pertenece cada destino
+m3 Circuito =
+SWITCH ( SELECTEDVALUE ( dDestino[Circuito] ),
+    "RD",        [m3 Salida RD],
+    "CNP",       [m3 Salida CNP],
+    "Servicios", [m3 Servicios] )
+
+% del Circuito = DIVIDE ( [m3 por Destino], [m3 Circuito] )
+% del Total    = DIVIDE ( [m3 por Destino], [m3 Distribuido] )
+
+-- control de cierre
+m3 No Distribuido = [m3 Clarificada Producida] - [m3 Distribuido]
+% Perdida en Red  = DIVIDE ( [m3 No Distribuido], [m3 Clarificada Producida] )
+```
+
+Si no tienes `m3 Clarificada Producida`, créala:
+```dax
+m3 Clarificada Producida =
+CALCULATE ( [m3 Contador], dEquipo[TIPOAGUA] = "Clarificada", dEquipo[CATEGORIA] = "Produccion" )
+```
+
+## 7.3 El aporte del pozo
+
+`CONT10 Pozo` tiene `DISTRIBUCION = Invernaderos`. Si ese pozo efectivamente riega invernaderos, parte de la demanda de riego no sale de Salida RD y el residual "otras áreas RD" te queda inflado. Cuando lo confirmes, cambia una sola medida:
+
+```dax
+m3 Riego RD desde Contador =
+MAX ( [m3 Riego RD] - CALCULATE ( [m3 Contador], dEquipo[ID_EQUIPO] = "CONT10" ), 0 )
+```
+y úsala dentro de `m3 Otras Areas RD` en lugar de `[m3 Riego RD]`. Mientras no lo confirmes, déjalo como está y ten presente que el residual incluye el aporte del pozo.
+
+## 7.4 La página nueva: Distribución total
+
+Reemplaza tu página 3 por esta. Es el análisis completo de los tres circuitos.
+
+| Visual | Configuración |
+|---|---|
+| **Tarjetas** ×4 | `[m3 Distribuido]`, `[m3 Salida RD]`, `[m3 Salida CNP]`, `[m3 Servicios]` |
+| **Barras apiladas horizontales** | Eje Y `dDestino[Circuito]` · Leyenda `dDestino[Destino]` · Eje X `[m3 por Destino]` — de un vistazo se ve cómo se parte cada circuito |
+| **Anillo** | Leyenda `dDestino[Destino]` · Valores `[m3 por Destino]` · etiquetas con `% del Total` |
+| **Columnas apiladas 100 %** | Eje X `dCalendario[AnioMes]` · Leyenda `dDestino[Destino]` · Eje Y `[m3 por Destino]` |
+| **Matriz** | Filas `dDestino[Circuito]` y `dDestino[Destino]` · Columnas `dCalendario[AnioMes]` · Valores `[m3 por Destino]` y `[% del Circuito]` |
+| **Cascada** | Categoría `dDestino[Destino]` · Eje Y `[m3 por Destino]` |
+| **Tarjeta** | `[% Perdida en Red]` — cuánta agua clarificada no pasó por ninguno de los tres contadores de salida |
+
+Y en la página 4, el gráfico de granularidad ahora debe llevar las dos líneas de contador:
+Eje X `Granularidad` · Eje Y `[m3 Salida RD]`, `[m3 Salida CNP]`, `[m3 Riego RD]`, `[m3 Riego CNP]`, `[m3 P. Mayores]`, `[m3 Servicios]`.
+
+---
+
+# 8 · Orden para aplicar las correcciones
+
+1. **Vista Modelo**: cambia las 8 relaciones a **Único**. Prueba `L por planta dia`. Aquí ya debería dejar de dar el error.
+2. **Editor de Power Query**: reemplaza `fnNormalizaInv` (punto 3).
+3. Agrega el parámetro `pSitioPlantas` y reemplaza el encabezado de `PLANTAS` (puntos 4, 5 y 6).
+4. En `fRiegoDia`, agrega la columna `Plantas_Con_Agua` (punto 2).
+5. Cerrar y aplicar. Crea la consulta de control de PLANTAS y revísala.
+6. Borra `dDestinoRD` y `m3 por Destino RD`. Crea `dDestino` y las 10 medidas nuevas (punto 7).
+7. Arma la página de Distribución total.
+
+**Cómo saber que quedó bien:**
+
+| Revisión | Resultado esperado |
+|---|---|
+| `fRiegoDia[Etapa]` | Ya no debe existir `"Sin ciclo definido"` |
+| `fRiegoDia[Estado_Dato]` | La mayoría en `Medido` e `Interpolado`; `"Sin medicion en el ciclo"` cerca de cero |
+| `fRiegoDia[DDT]` | Valores de 0 hasta el ciclo del cultivo, no todos en 0 |
+| `dInvernadero` en un visual con `[m3 Riego]` | Deben aparecer los N y los P con valores, no en blanco |
+| `[L por planta dia]` | Entre 0.3 y 3.0 |
+| `[m3 Distribuido]` | Menor o igual a `[m3 Clarificada Producida]` |
+
+Si después del paso 1 el error de `L por planta dia` sigue apareciendo, dime en qué visual exactamente y con qué campos, porque entonces sería otra cosa y hay que verlo aparte.
