@@ -1,0 +1,354 @@
+# Correcciones — relaciones, normalización de nombres y residual de RD
+### Instrucciones actualizadas · aplicar en este orden
+
+---
+
+## PARTE A · El error de rutas ambiguas
+
+### Por qué no se arregla cambiando la cardinalidad
+
+En tus capturas probaste `Único`, `Uno a varios`, `Uno a uno` y `Varios a varios`, y el mensaje siguió igual. **Es normal:** el error no lo produce la relación que estás editando. El motor te avisa que existen dos caminos entre `dEquipo` y `dCalendario`, y basta con que **cualquiera** de las relaciones del circuito esté en `Ambas` para que se vuelva ambiguo. Estás viendo el error de una relación mientras la causa está en otra.
+
+Los dos caminos son:
+```
+dEquipo → REGISTROS_AGUA → dCalendario
+dEquipo → fAguaDiaria   → dCalendario
+```
+
+### La solución: borrar una relación
+
+**`REGISTROS_AGUA` no necesita estar unida a `dEquipo`.** Esa tabla ya trae sus propias columnas `ID_EQUIPO`, `DESCRIPCION`, `SISTEMA`, `CATEGORIA` y `DISTRIBUCION` — se cargaron con la lista. La página de calidad de datos puede usar esas columnas directamente. Al borrar esa relación desaparece uno de los dos caminos y el problema se acaba.
+
+**Pasos:**
+
+1. Vista **Modelo**
+2. Ubica la línea que une `dEquipo` con `REGISTROS_AGUA`
+3. Clic derecho sobre esa línea → **Eliminar**
+4. Confirmar
+
+> Se borra `dEquipo ↔ REGISTROS_AGUA`. **No** borres `REGISTROS_AGUA ↔ dCalendario`: esa se queda para que la página de calidad responda al filtro de fechas.
+
+### Cómo deben quedar las 7 relaciones
+
+| Desde | Hacia | Cardinalidad | Filtro cruzado |
+|---|---|---|---|
+| `fAguaDiaria[Fecha]` | `dCalendario[Fecha]` | Varios a uno (*:1) | **Único** |
+| `fAguaDiaria[ID_EQUIPO]` | `dEquipo[ID_EQUIPO]` | Varios a uno (*:1) | **Único** |
+| `REGISTROS_AGUA[FECHA_LECTURA]` | `dCalendario[Fecha]` | Varios a uno (*:1) | **Único** |
+| `fRiegoDia[Fecha]` | `dCalendario[Fecha]` | Varios a uno (*:1) | **Único** |
+| `fRiegoDia[Greenhouse]` | `dInvernadero[ID_INV]` | Varios a uno (*:1) | **Único** |
+| `fRiegoDia[Crop]` | `dCultivo[Crop]` | Varios a uno (*:1) | **Único** |
+| `fRiegoDia[Etapa]` | `dEtapa[Etapa]` | Varios a uno (*:1) | **Único** |
+
+Tres reglas que no debes romper en este modelo:
+
+- **Nunca `Ambas`.** Todas van en Único.
+- **Nunca `Varios a varios`.** En una de tus capturas el propio Power BI te advierte que esa cardinalidad cambia el comportamiento; aquí no aplica.
+- **Nunca `Uno a uno`.** El lado de los hechos siempre tiene repetidos.
+
+En la tabla de arriba las escribí como `Varios a uno (*:1)` porque siempre estás arrastrando **desde el hecho hacia la dimensión**. Si arrastras al revés, Power BI la muestra como `Uno a varios (1:*)` — es exactamente la misma relación, solo cambia el orden en que la lees. Lo que importa es que el lado "uno" sea la tabla `d…`.
+
+`dDestino` queda **sin ninguna relación**. Es correcto y a propósito: sirve solo como eje de los visuales.
+
+---
+
+## PARTE B · "Otras áreas / pérdidas RD" sale en 0
+
+No es un problema de la fórmula, es que uno de sus tres componentes está vacío. Cuando el modelo tiene rutas ambiguas, las medidas que cruzan `dEquipo` con el calendario devuelven blanco, y `Salida RD − Riego RD − P. Mayores` da blanco también.
+
+**Diagnóstico en 1 minuto.** Pon un visual de **Tarjeta de varias filas** con estas cuatro medidas:
+
+```
+[m3 Salida RD]   [m3 Riego RD]   [m3 P. Mayores]   [m3 Otras Areas RD]
+```
+
+| Lo que ves | Qué significa |
+|---|---|
+| `m3 Salida RD` en blanco | Es la ambigüedad de la Parte A. Bórrala y vuelve a probar |
+| `m3 Salida RD` con valor y `m3 Riego RD` en blanco o 0 | Los invernaderos no cruzan. Es la Parte C |
+| Los tres con valor y `Otras Areas` en 0 | Riego + P. Mayores ya cubren toda la salida. Es un resultado real, no un error |
+
+**Y reemplaza la medida por esta versión, que no se cae si algún término viene vacío:**
+
+```dax
+m3 Otras Areas RD =
+VAR S = [m3 Salida RD]
+VAR R = COALESCE ( [m3 Riego RD],   0 )
+VAR P = COALESCE ( [m3 P. Mayores], 0 )
+RETURN
+    IF ( NOT ISBLANK ( S ), MAX ( S - R - P, 0 ) )
+```
+
+Lo mismo para CNP:
+
+```dax
+m3 Otras Areas CNP =
+VAR S = [m3 Salida CNP]
+VAR R = COALESCE ( [m3 Riego CNP], 0 )
+RETURN
+    IF ( NOT ISBLANK ( S ), MAX ( S - R, 0 ) )
+```
+
+---
+
+## PARTE C · Nombres con mayúsculas, espacios y acentos
+
+Este es el punto que pediste. Los mismos invernaderos y cultivos vienen escritos de formas distintas en cada lista, y el modelo une por texto exacto: `N 1` no es `N1`, `3a` no es `3A`, `Tomato cherry` no es `Tomato Cherry`, `Melón` no es `Melon`.
+
+La solución es **una sola función de limpieza que se aplique en los cuatro lados a la vez** — las dos listas y los dos catálogos. Si limpias solo un lado, sigue sin cruzar.
+
+### C.1 Función base: `fnTextoClave`
+
+Nueva función (Consulta en blanco → Editor avanzado → pegar → renombrar). Quita acentos, pasa a mayúsculas, y colapsa los espacios repetidos y el espacio duro que meten Excel y SharePoint.
+
+```m
+(entrada as any) as nullable text =>
+let
+    t0 = if entrada = null then null else Text.From(entrada),
+    t1 = if t0 = null then null else Text.Upper(Text.Trim(t0)),
+
+    // acentos y enie
+    t2 = if t1 = null then null else
+         List.Accumulate(
+            { {"Á","A"}, {"É","E"}, {"Í","I"}, {"Ó","O"}, {"Ú","U"},
+              {"Ü","U"}, {"Ñ","N"}, {"À","A"}, {"È","E"} },
+            t1, (s, p) => Text.Replace(s, p{0}, p{1})),
+
+    // espacio duro (alt+160) y tabulaciones -> espacio normal
+    t3 = if t2 = null then null else
+         Text.Replace(Text.Replace(t2, Character.FromNumber(160), " "),
+                      Character.FromNumber(9), " "),
+
+    // colapsar espacios repetidos: "N   1" -> "N 1"
+    t4 = if t3 = null then null else
+         Text.Combine(List.Select(Text.Split(t3, " "), each _ <> ""), " ")
+in
+    if t4 = null or t4 = "" then null else t4
+```
+
+### C.2 `fnNormalizaInv` — reemplaza la que tienes
+
+Sobre la clave base, quita **todos** los espacios, guiones y ceros a la izquierda.
+
+```m
+(entrada as any) as nullable text =>
+let
+    clave  = fnTextoClave(entrada),
+    sinSep = if clave = null then null
+             else Text.Remove(clave, {" ", "-", "_", ".", "/"}),
+    sinCero= if sinSep = null or sinSep = "" then null
+             else if Text.Length(sinSep) > 1 and Text.StartsWith(sinSep, "0")
+                  then Text.TrimStart(sinSep, "0")
+             else sinSep
+in
+    sinCero
+```
+
+Qué hace con casos reales de tus listas:
+
+| Viene como | Queda como |
+|---|---|
+| `N 1` | `N1` |
+| `3a` | `3A` |
+| `3B ` | `3B` |
+| `P2 ` | `P2` |
+| `08` | `8` |
+| `n-2` | `N2` |
+| `  22  ` | `22` |
+
+### C.3 `fnNormalizaCrop` — función nueva
+
+No basta con `Text.Proper`, porque las dos listas usan idiomas distintos y hay variantes. Esta función lleva todo a un único nombre canónico en inglés, que es el que usa `dCultivo`.
+
+```m
+(entrada as any) as nullable text =>
+let
+    c = fnTextoClave(entrada),
+    r =
+        if c = null then null
+        // OJO con el orden: cherry antes que tomate, y sandia antes que melon
+        else if Text.Contains(c, "CHERRY") or Text.Contains(c, "CEREZA") then "Tomato Cherry"
+        else if Text.Contains(c, "TOMAT")                                 then "Tomato"
+        else if Text.Contains(c, "PEPIN")  or Text.Contains(c, "CUCUMBER") then "Cucumber"
+        else if Text.Contains(c, "SANDIA") or Text.Contains(c, "WATERMELON") then "Watermelon"
+        else if Text.Contains(c, "MELON")                                 then "Melon"
+        else if Text.Contains(c, "CHILE")  or Text.Contains(c, "PEPPER")
+             or Text.Contains(c, "AJI")                                    then "Pepper"
+        else Text.Proper(c)
+in
+    r
+```
+
+> **El orden de las condiciones es crítico.** `WATERMELON` contiene `MELON`, así que si preguntas por melón primero, todas las sandías se vuelven melón. Y `TOMATO CHERRY` contiene `TOMAT`, así que cherry va antes que tomate. No reordenes esas seis líneas.
+
+Casos que resuelve:
+
+| Viene como | Queda como |
+|---|---|
+| `Tomato cherry` | `Tomato Cherry` |
+| `TOMATE CHERRY` | `Tomato Cherry` |
+| `Tomate` | `Tomato` |
+| `Melón` | `Melon` |
+| `Sandía` | `Watermelon` |
+| `Chile` | `Pepper` |
+| `pepper ` | `Pepper` |
+
+### C.4 Dónde aplicarlas — los cuatro lados
+
+**1. En `PLANTAS`**, paso `Limpio`:
+```m
+    Limpio = Table.TransformColumns(Cols, {
+                {"Greenhouse",         each fnNormalizaInv(_), type text},
+                {"Crop",               each fnNormalizaCrop(_), type text},
+                {"Program",            each fnTextoClave(_), type text},
+                {"PlantsTransplanted", each fnTextoANumero(_), type number}}),
+```
+
+**2. En `CONSUMOAGUAINVERNADEROS`**, paso `Limpio`:
+```m
+    Limpio = Table.TransformColumns(SinDup, {
+                {"Fecha de colecta de muestra", each fnFechaSP(_), type date},
+                {"Invernadero",                 each fnNormalizaInv(_), type text},
+                {"Volumen de gotero",           each fnTextoANumero(_), type number},
+                {"Volumen drenaje",             each fnTextoANumero(_), type number},
+                {"Nave",                        each fnTextoANumero(_), Int64.Type},
+                {"Cultivo",                     each fnNormalizaCrop(_), type text}}),
+```
+
+**3. En `dInvernadero`**, cambia el último paso:
+```m
+    Norm  = Table.TransformColumns(Tipos, {{"ID_INV", each fnNormalizaInv(_), type text}})
+in
+    Norm
+```
+(agrega una coma al final de la línea de `Tipos`)
+
+**4. En `dCultivo`**, cambia el último paso:
+```m
+    Norm = Table.TransformColumns(E, {{"Crop", each fnNormalizaCrop(_), type text}})
+in
+    Norm
+```
+(agrega una coma al final de la línea `E = ...`)
+
+Los catálogos también pasan por la función. Así los dos lados de cada relación aterrizan siempre en el mismo valor, sin importar cómo lo escribieron.
+
+### C.5 Dos consultas de control
+
+Sin esto, un invernadero mal escrito desaparece del reporte en silencio. Créalas y revísalas después de cada actualización — deberían estar vacías.
+
+**`QA_Invernaderos_SinCatalogo`**
+```m
+let
+    A     = Table.AddColumn(
+              Table.RenameColumns(Table.Distinct(Table.SelectColumns(PLANTAS, {"Greenhouse"})),
+                                  {{"Greenhouse","Clave"}}),
+              "Origen", each "PLANTAS", type text),
+    B     = Table.AddColumn(
+              Table.RenameColumns(Table.Distinct(Table.SelectColumns(CONSUMOAGUAINVERNADEROS, {"Invernadero"})),
+                                  {{"Invernadero","Clave"}}),
+              "Origen", each "CONSUMOAGUAINVERNADEROS", type text),
+    Todo  = Table.Combine({A, B}),
+    Falta = Table.SelectRows(Todo, each [Clave] <> null
+                                    and not List.Contains(dInvernadero[ID_INV], [Clave]))
+in
+    Falta
+```
+
+**`QA_Cultivos_SinCatalogo`**
+```m
+let
+    A     = Table.Distinct(Table.SelectColumns(PLANTAS, {"Crop"})),
+    Falta = Table.SelectRows(A, each [Crop] <> null
+                                 and not List.Contains(dCultivo[Crop], [Crop]))
+in
+    Falta
+```
+
+Si `QA_Invernaderos_SinCatalogo` te devuelve, por ejemplo, `N10`, significa que existe un invernadero que no está en tu catálogo: agrégalo a `dInvernadero`. Si te devuelve algo raro como `INV3`, es un error de captura en SharePoint.
+
+---
+
+## PARTE D · PLANTAS con `Expected transplanting date`
+
+Confirmado que la columna existe, y sí forma parte del análisis: cuando no hay fecha de trasplante real, se usa la estimada. El código de abajo **la usa**. Busca las cuatro columnas de fecha por patrón en vez de por nombre exacto, para que funcione tenga uno o dos espacios, mayúsculas o minúsculas.
+
+Reemplaza el encabezado de `PLANTAS` hasta el paso `FinReg`:
+
+```m
+let
+    Origen = SharePoint.Tables(pSitioPlantas, [Implementation="2.0", ViewMode="All"]),
+    Lista  = Origen{[Title="PLANTAS"]}[Items],
+
+    // localizar las 4 columnas de fecha sin depender del nombre exacto
+    N      = Table.ColumnNames(Lista),
+    Buscar = (claves as list) as nullable text =>
+                List.First(List.Select(N, (c) =>
+                    List.AllTrue(List.Transform(claves, (k) => Text.Contains(Text.Lower(c), k)))), null),
+    cTrasR = Buscar({"real", "transplant"}),
+    cTrasE = Buscar({"expected", "transplant"}),
+    cCosR  = Buscar({"real", "harvest"}),
+    cCosE  = Buscar({"expected", "harvest"}),
+
+    Cols   = Table.SelectColumns(Lista,
+                List.RemoveNulls({"Crop","Program","Greenhouse","PlantsTransplanted","SetName",
+                                  cTrasR, cTrasE, cCosR, cCosE}), MissingField.UseNull),
+
+    Limpio = Table.TransformColumns(Cols, {
+                {"Greenhouse",         each fnNormalizaInv(_),  type text},
+                {"Crop",               each fnNormalizaCrop(_), type text},
+                {"Program",            each fnTextoClave(_),    type text},
+                {"PlantsTransplanted", each fnTextoANumero(_),  type number}}),
+
+    // trasplante: real y si no hay, la estimada
+    FIni   = Table.AddColumn(Limpio, "Fecha_Inicio", each
+                let r = if cTrasR = null then null else fnFechaSP(Record.FieldOrDefault(_, cTrasR, null)),
+                    e = if cTrasE = null then null else fnFechaSP(Record.FieldOrDefault(_, cTrasE, null))
+                in if r <> null then r else e, type date),
+
+    // cosecha: real y si no hay, la estimada
+    FinReg = Table.AddColumn(FIni, "Fin_Registrado", each
+                let r = if cCosR = null then null else fnFechaSP(Record.FieldOrDefault(_, cCosR, null)),
+                    e = if cCosE = null then null else fnFechaSP(Record.FieldOrDefault(_, cCosE, null))
+                in if r <> null then r else e, type date),
+
+    // trazabilidad de qué fecha se usó en cada renglón
+    Orig0  = Table.AddColumn(FinReg, "Origen_Fechas", each
+                (if cTrasR <> null and Record.FieldOrDefault(_, cTrasR, null) <> null
+                    then "Trasplante real" else "Trasplante estimado")
+                & " / " &
+                (if cCosR <> null and Record.FieldOrDefault(_, cCosR, null) <> null
+                    then "Cosecha real" else "Cosecha estimada"), type text),
+```
+
+De ahí en adelante sigue igual, con `ConCic`, `FFin`, `Estado` y `Final` — solo que `ConCic` ahora parte de `Orig0` en vez de `FinReg`, y ya no hace falta el paso `Orig` que tenías al final.
+
+En la tabla de detalle del reporte deja siempre visible `Origen_Fechas`. Así, cuando alguien pregunte por un número, se ve de inmediato si ese ciclo va con fecha real o con proyección.
+
+---
+
+## PARTE E · Orden de aplicación y verificación
+
+1. **Vista Modelo:** borra la relación `dEquipo ↔ REGISTROS_AGUA`. Revisa que las 7 restantes estén en **Único**.
+2. Prueba `[L por planta dia]` y la tarjeta de diagnóstico de la Parte B. Anota qué medida sale en blanco.
+3. **Editor de Power Query:** crea `fnTextoClave` y `fnNormalizaCrop`, reemplaza `fnNormalizaInv`.
+4. Aplica las funciones en los cuatro lados (C.4).
+5. Reemplaza el encabezado de `PLANTAS` (Parte D).
+6. Crea las dos consultas de control (C.5).
+7. Cerrar y aplicar.
+8. Reemplaza las dos medidas de "otras áreas" con la versión `COALESCE`.
+
+**Qué debe pasar:**
+
+| Revisión | Esperado |
+|---|---|
+| `QA_Invernaderos_SinCatalogo` | Vacía |
+| `QA_Cultivos_SinCatalogo` | Vacía |
+| `fRiegoDia[Etapa]` | Sin `"Sin ciclo definido"` |
+| `fRiegoDia[Estado_Dato]` | Mayoría `Medido` e `Interpolado` |
+| `fRiegoDia[DDT]` | De 0 al largo del ciclo, no todo en 0 |
+| Barras de `[m3 Riego]` por `dInvernadero[ID_INV]` | Aparecen los N y los P con valores |
+| `[m3 Otras Areas RD]` | Con valor, ya no 0 |
+| `[L por planta dia]` | Entre 0.3 y 3.0 |
+
+Si después del paso 1 el mensaje de rutas ambiguas sigue apareciendo, mándame una foto de la **vista Modelo completa**, con todas las líneas visibles. Ahí se ve de inmediato cuál relación quedó en `Ambas` — se distingue porque tiene flechas en los dos extremos, mientras que las de filtro único solo tienen una.
