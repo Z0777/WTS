@@ -1,0 +1,559 @@
+# Pestaña de Análisis de Agua — Power Apps · Fase 1
+### Agua bombeada, clarificada y consumida · desglose por día, semana, mes y hora
+
+> Nada de lo existente se modifica. Se agrega un contenedor `conAnalisisAgua` con `Visible = varSeccionActiva = "AnalisisAgua"` y un botón más en el menú.
+> Sintaxis con punto y coma, encadenado `;;`, decimales con coma, RGBA con punto y coma.
+
+---
+
+## 1 · El problema de fondo y cómo se resuelve
+
+Tus lecturas no son diarias: unas son semanales, otras cada 15 días, otras cada mes. Si sumas `CONSUMO_M3` por mes, el agua de un período que cruza dos meses se carga entera al mes de la lectura. Eso deforma cualquier comparación.
+
+La solución es **prorratear cada lectura entre los días de su período** y guardar el resultado en una colección diaria. De ahí salen, sin recalcular nada, el día, la semana, el mes y el promedio por hora.
+
+```
+Lectura CONT01 del 11/05 · período de 7 días · 1.448 m³
+        ↓
+7 renglones de 206,86 m³ — del 05/05 al 11/05
+        ↓
+Día = 1 renglón   ·   Semana = suma de 7   ·   Mes = los que caen en el mes
+```
+
+Si un día ya trae su propia lectura, conserva su valor exacto: el prorrateo solo reparte lo que abarca más de un día. **Por eso funciona igual si mañana empiezan a leer diario o cada quince.**
+
+---
+
+## 2 · `App.OnStart` — agregar al final del que ya tienes
+
+```powerfx
+// ---------- variables de la pestaña de analisis ----------
+Set(varAnaAnio; Year(Today()));;
+Set(varMesSel; Month(Today()));;
+Set(varAnaIni; Date(Year(Today()); Month(Today()); 1));;
+Set(varAnaFin; DateAdd(DateAdd(Date(Year(Today()); Month(Today()); 1); 1; TimeUnit.Months); -1; TimeUnit.Days));;
+Set(varGranularidad; "Semana");;
+
+// ---------- clasificacion de contadores (se edita aqui, sin tocar formulas) ----------
+ClearCollect(
+    colGrupos;
+    {Equipo: "CONT01"; Grupo: "Bombeada";    Etiqueta: "Bombeo Principal";       Orden: 1;  ColorHex: "#1D4ED8"};
+    {Equipo: "CONT02"; Grupo: "Bombeada";    Etiqueta: "Bombeo Auxiliar";        Orden: 2;  ColorHex: "#3B82F6"};
+    {Equipo: "CONT10"; Grupo: "Bombeada";    Etiqueta: "Pozo";                   Orden: 3;  ColorHex: "#0891B2"};
+    {Equipo: "CONT11"; Grupo: "Bombeada";    Etiqueta: "Presa Campo Abierto";    Orden: 4;  ColorHex: "#8B5CF6"};
+    {Equipo: "CONT13"; Grupo: "Bombeada";    Etiqueta: "Areas Verdes";           Orden: 5;  ColorHex: "#16A34A"};
+
+    {Equipo: "CONT03"; Grupo: "Clarificada"; Etiqueta: "Clarificador 1 Salida";  Orden: 6;  ColorHex: "#0EA5E9"};
+    {Equipo: "CONT05"; Grupo: "Clarificada"; Etiqueta: "Clarificador 2 Salida";  Orden: 7;  ColorHex: "#38BDF8"};
+
+    {Equipo: "CONT07"; Grupo: "Consumida";   Etiqueta: "Salida RD";              Orden: 8;  ColorHex: "#F59E0B"};
+    {Equipo: "CONT06"; Grupo: "Consumida";   Etiqueta: "Salida CNP";             Orden: 9;  ColorHex: "#FB923C"};
+    {Equipo: "CONT08"; Grupo: "Consumida";   Etiqueta: "Agua de Servicios";      Orden: 10; ColorHex: "#FDBA74"};
+
+    {Equipo: "CONT12"; Grupo: "Otros";       Etiqueta: "Riego Campo Abierto";    Orden: 11; ColorHex: "#94A3B8"};
+    {Equipo: "CONT09"; Grupo: "Otros";       Etiqueta: "P. Mayores";             Orden: 12; ColorHex: "#A8A29E"};
+
+    {Equipo: "CONT04"; Grupo: "Excluir";     Etiqueta: "Clarificador 2 Entrada"; Orden: 90; ColorHex: "#E2E8F0"};
+    {Equipo: "BOMB01"; Grupo: "Excluir";     Etiqueta: "Bomba (no contabiliza)"; Orden: 91; ColorHex: "#E2E8F0"}
+);;
+```
+
+**Dos exclusiones a propósito, y conviene que sepas por qué:**
+
+- **CONT04 (Clarificador 2 Entrada)** no entra en Bombeada. Esa agua ya la contó CONT01 al salir del bombeo principal; si la sumas, la cuentas dos veces.
+- **BOMB01** es una bomba, no un contador: no contabiliza agua.
+
+Si más adelante resulta que CONT13 es consumo y no bombeo, cambias su `Grupo` en esa línea y todo el tablero se recalcula solo. Para eso está la clasificación en colección y no dentro de las fórmulas.
+
+---
+
+## 3 · El bloque de recálculo
+
+Construye `colDias`, que es la base de todo. Va **al final del `OnStart`**, después de `colGrupos`.
+
+```powerfx
+// ---------- 1. lecturas normalizadas, sin hora ----------
+ClearCollect(
+    colLect;
+    ForAll(
+        Sort(REGISTROS_AGUA; FECHA_LECTURA; Ascending) As R;
+        {
+            Equipo: Upper(Trim(Coalesce(R.ID_EQUIPOS; "")));
+            Fecha:  DateValue(Text(R.FECHA_LECTURA; "dd/mm/yyyy"); "es-ES");
+            M3:     Coalesce(R.CONSUMO_M3; 0);
+            Horas:  Coalesce(R.HORAS_OPERACION; 0);
+            Costo:  Coalesce(R.COSTO_TOTAL; 0)
+        }
+    )
+);;
+
+// ---------- 2. dias que abarca cada lectura ----------
+ClearCollect(
+    colPeriodos;
+    ForAll(
+        Filter(colLect; M3 > 0) As A;
+        With(
+            {
+                _prev: Last(
+                    Sort(
+                        Filter(colLect; Equipo = A.Equipo; Fecha < A.Fecha);
+                        Fecha;
+                        Ascending
+                    )
+                ).Fecha
+            };
+            With(
+                { _dias: If(IsBlank(_prev); 1; Max(DateDiff(_prev; A.Fecha; TimeUnit.Days); 1)) };
+                {
+                    Equipo:   A.Equipo;
+                    FechaIni: DateAdd(A.Fecha; -_dias; TimeUnit.Days);
+                    Dias:     _dias;
+                    M3Dia:    A.M3 / _dias;
+                    HorasDia: A.Horas / _dias;
+                    CostoDia: A.Costo / _dias
+                }
+            )
+        )
+    )
+);;
+
+// ---------- 3. explotar cada periodo a dias ----------
+ClearCollect(
+    colTmp;
+    ForAll(
+        colPeriodos As P;
+        {
+            Sub: ForAll(
+                Sequence(P.Dias) As S;
+                {
+                    Equipo:   P.Equipo;
+                    Fecha:    DateAdd(P.FechaIni; S.Value; TimeUnit.Days);
+                    M3Dia:    P.M3Dia;
+                    HorasDia: P.HorasDia;
+                    CostoDia: P.CostoDia
+                }
+            )
+        }
+    )
+);;
+ClearCollect(colDiasBase; Ungroup(colTmp; "Sub"));;
+
+// ---------- 4. clasificacion y llaves de tiempo ----------
+ClearCollect(
+    colDias;
+    ForAll(
+        colDiasBase As D;
+        With(
+            { _g: LookUp(colGrupos; Equipo = D.Equipo) };
+            {
+                Equipo:    D.Equipo;
+                Fecha:     D.Fecha;
+                Anio:      Year(D.Fecha);
+                NumMes:    Month(D.Fecha);
+                IniMes:    Date(Year(D.Fecha); Month(D.Fecha); 1);
+                IniSemana: DateAdd(D.Fecha; -(Weekday(D.Fecha; StartOfWeek.Monday) - 1); TimeUnit.Days);
+                M3Dia:     D.M3Dia;
+                HorasDia:  D.HorasDia;
+                CostoDia:  D.CostoDia;
+                Grupo:     Coalesce(_g.Grupo; "Otros");
+                Etiqueta:  Coalesce(_g.Etiqueta; D.Equipo);
+                ColorHex:  Coalesce(_g.ColorHex; "#94A3B8");
+                Orden:     Coalesce(_g.Orden; 99)
+            }
+        )
+    )
+);;
+Clear(colTmp);;
+Clear(colDiasBase);;
+Clear(colPeriodos)
+```
+
+### Dónde más pegarlo, para que los cambios se vean en tiempo real
+
+| Lugar | Para qué |
+|---|---|
+| `App.OnStart` | Carga inicial |
+| `icnAnaActualizar.OnSelect` | Refresco manual |
+| Al final del `OnSelect` de `Button3` (guardar lectura) | Que la lectura recién guardada aparezca de inmediato |
+
+> Como el bloque es largo, la forma limpia es dejarlo solo en `OnStart` y en los otros dos poner `Set(varRecalcular; !varRecalcular)`, con el bloque en el `OnChange` de un `Toggle` oculto cuyo `Default` sea `varRecalcular`. Si prefieres no complicarte, pégalo tal cual en los tres.
+
+**Sobre el límite de filas:** `colLect` lee `REGISTROS_AGUA` completo. Ve a **Configuración → General → Límite de fila de datos** y súbelo a 2.000. Con tus ~300 lecturas sobra; cuando se acerquen a 2.000 habrá que filtrar el paso 1 por año.
+
+---
+
+## 4 · Fórmulas con nombre (`App.Formulas`)
+
+Evitan repetir el mismo `Filter` en treinta controles y hacen que todo reaccione al instante cuando cambias el rango.
+
+```powerfx
+frDias = Filter(colDias; Fecha >= varAnaIni; Fecha <= varAnaFin);
+
+frNumDias    = Max(DateDiff(varAnaIni; varAnaFin; TimeUnit.Days) + 1; 1);
+frNumSemanas = frNumDias / 7;
+frNumMeses   = frNumDias / 30,4;
+frNumHoras   = frNumDias * 24;
+
+frBombeada    = Sum(Filter(frDias; Grupo = "Bombeada"); M3Dia);
+frClarificada = Sum(Filter(frDias; Grupo = "Clarificada"); M3Dia);
+frConsumida   = Sum(Filter(frDias; Grupo = "Consumida"); M3Dia);
+```
+
+> Si tu entorno no tiene fórmulas con nombre habilitadas, reemplaza `frDias` por `Filter(colDias; Fecha >= varAnaIni; Fecha <= varAnaFin)` en cada control. Funciona igual, solo queda más largo.
+
+---
+
+## 5 · Botón nuevo en el menú
+
+Dentro de `Container9`, después de `btnMenuInsumos`:
+
+```yaml
+- btnMenuAnalisisAgua:
+    Control: Classic/Button@2.2.0
+    Properties:
+      Color: =If(varSeccionActiva = "AnalisisAgua"; RGBA(255; 255; 255; 1); RGBA(148; 163; 184; 1))
+      Fill: =If(varSeccionActiva = "AnalisisAgua"; RGBA(37; 99; 235; 1); RGBA(15; 23; 42; 0))
+      LayoutMinHeight: =16
+      LayoutMinWidth: =16
+      OnSelect: =Set(varSeccionActiva; "AnalisisAgua")
+      RadiusBottomLeft: =4
+      RadiusBottomRight: =4
+      RadiusTopLeft: =4
+      RadiusTopRight: =4
+      Text: ="Análisis"
+      Tooltip: ="Análisis de distribución de agua"
+      Width: =140
+```
+
+---
+
+## 6 · El contenedor de análisis
+
+Al mismo nivel que `conCostos`:
+
+```yaml
+- conAnalisisAgua:
+    Control: GroupContainer@1.5.0
+    Variant: AutoLayout
+    Properties:
+      Height: =Parent.Height
+      LayoutAlignItems: =LayoutAlignItems.Stretch
+      LayoutDirection: =LayoutDirection.Vertical
+      LayoutGap: =8
+      LayoutOverflowY: =LayoutOverflow.Scroll
+      PaddingBottom: =8
+      PaddingLeft: =8
+      PaddingRight: =8
+      PaddingTop: =8
+      Visible: =varSeccionActiva = "AnalisisAgua"
+      Width: =Parent.Width - If(varMenuExpandido; 150; 45)
+      X: =If(varMenuExpandido; 150; 45)
+```
+
+### 6.1 Barra de filtros — `conAnaFiltros`
+
+Horizontal, `Height: 60`, `FillPortions: 0`, `Fill: RGBA(15; 23; 42; 1)`.
+
+**`cmbAnaAnio`** (ModernCombobox)
+```powerfx
+// Items
+Sort(Distinct(colDias; Anio); Value; Descending)
+
+// ItemDisplayText
+ThisItem.Value
+
+// OnChange
+Set(varAnaAnio; cmbAnaAnio.Selected.Value);;
+Set(varAnaIni; If(varMesSel <= 0; Date(varAnaAnio; 1; 1); Date(varAnaAnio; varMesSel; 1)));;
+Set(varAnaFin; If(varMesSel <= 0; Date(varAnaAnio; 12; 31); DateAdd(DateAdd(varAnaIni; 1; TimeUnit.Months); -1; TimeUnit.Days)))
+```
+
+**`cmbAnaMes`** — la forma con combobox
+```powerfx
+// Items
+Table(
+    {N: 0;  Nombre: "Todo el año"};
+    {N: 1;  Nombre: "Enero"};      {N: 2;  Nombre: "Febrero"};
+    {N: 3;  Nombre: "Marzo"};      {N: 4;  Nombre: "Abril"};
+    {N: 5;  Nombre: "Mayo"};       {N: 6;  Nombre: "Junio"};
+    {N: 7;  Nombre: "Julio"};      {N: 8;  Nombre: "Agosto"};
+    {N: 9;  Nombre: "Septiembre"}; {N: 10; Nombre: "Octubre"};
+    {N: 11; Nombre: "Noviembre"};  {N: 12; Nombre: "Diciembre"}
+)
+
+// ItemDisplayText
+ThisItem.Nombre
+
+// OnChange
+Set(varMesSel; cmbAnaMes.Selected.N);;
+Set(varAnaIni; If(varMesSel = 0; Date(varAnaAnio; 1; 1); Date(varAnaAnio; varMesSel; 1)));;
+Set(varAnaFin; If(varMesSel = 0; Date(varAnaAnio; 12; 31); DateAdd(DateAdd(varAnaIni; 1; TimeUnit.Months); -1; TimeUnit.Days)))
+```
+
+**`dpAnaIni` / `dpAnaFin`** (ModernDatePicker) — el rango libre desde/hasta
+```powerfx
+// dpAnaIni
+DefaultDate: =varAnaIni
+Format: ="dd/mm/yyyy"
+OnChange: =Set(varAnaIni; Self.SelectedDate);; Set(varMesSel; -1)
+
+// dpAnaFin
+DefaultDate: =varAnaFin
+Format: ="dd/mm/yyyy"
+OnChange: =Set(varAnaFin; Self.SelectedDate);; Set(varMesSel; -1)
+```
+> `varMesSel = -1` significa "rango libre" y apaga el resaltado de los botones de mes.
+
+**`icnAnaActualizar`** (ModernIcon, `Icon: "ArrowClockwise"`, `IconColor: RGBA(255; 255; 255; 1)`)
+```powerfx
+// OnSelect  -> pega aquí el bloque completo del punto 3
+```
+
+### 6.2 Botones de mes — `galAnaMeses`
+
+La forma con botones. Galería horizontal: `Height: 42`, `TemplateSize: 82`, `WrapCount: 13`, `ShowScrollbar: false`.
+
+```powerfx
+// Items
+Table(
+    {N: 0;  Nombre: "AÑO"};
+    {N: 1;  Nombre: "Ene"}; {N: 2;  Nombre: "Feb"}; {N: 3;  Nombre: "Mar"};
+    {N: 4;  Nombre: "Abr"}; {N: 5;  Nombre: "May"}; {N: 6;  Nombre: "Jun"};
+    {N: 7;  Nombre: "Jul"}; {N: 8;  Nombre: "Ago"}; {N: 9;  Nombre: "Sep"};
+    {N: 10; Nombre: "Oct"}; {N: 11; Nombre: "Nov"}; {N: 12; Nombre: "Dic"}
+)
+```
+
+Dentro, un `Classic/Button` llamado `btnAnaMes`:
+```powerfx
+// Text
+ThisItem.Nombre
+
+// Fill
+If(varMesSel = ThisItem.N; RGBA(37; 99; 235; 1); RGBA(241; 245; 249; 1))
+
+// Color
+If(varMesSel = ThisItem.N; RGBA(255; 255; 255; 1); RGBA(71; 85; 105; 1))
+
+// DisplayMode — apaga los meses sin datos
+If(
+    ThisItem.N = 0 Or CountRows(Filter(colDias; Anio = varAnaAnio; NumMes = ThisItem.N)) > 0;
+    DisplayMode.Edit;
+    DisplayMode.Disabled
+)
+
+// OnSelect
+Set(varMesSel; ThisItem.N);;
+Set(varAnaIni; If(ThisItem.N = 0; Date(varAnaAnio; 1; 1); Date(varAnaAnio; ThisItem.N; 1)));;
+Set(varAnaFin; If(ThisItem.N = 0; Date(varAnaAnio; 12; 31); DateAdd(DateAdd(varAnaIni; 1; TimeUnit.Months); -1; TimeUnit.Days)));;
+Reset(dpAnaIni);;
+Reset(dpAnaFin)
+```
+
+### 6.3 Botones de granularidad — `conAnaGranularidad`
+
+Contenedor horizontal con cuatro `Classic/Button`. Cambia texto y valor en cada uno:
+
+```powerfx
+// btnGranMes / btnGranSemana / btnGranDia / btnGranHora
+// Text:  "Mes" | "Semana" | "Día" | "Hora"
+
+// Fill  (ejemplo del de Mes)
+If(varGranularidad = "Mes"; RGBA(13; 50; 61; 1); RGBA(226; 232; 240; 1))
+
+// Color
+If(varGranularidad = "Mes"; RGBA(255; 255; 255; 1); RGBA(51; 65; 85; 1))
+
+// OnSelect
+Set(varGranularidad; "Mes")
+```
+
+### 6.4 Tarjetas de KPI — `galAnaKPI`
+
+Galería: `Height: 155`, `TemplateSize: 150`, `WrapCount: 3`, `ShowScrollbar: false`.
+
+```powerfx
+// Items
+Table(
+    {Titulo: "AGUA BOMBEADA";    Grupo: "Bombeada";    ColorHex: "#1D4ED8"};
+    {Titulo: "AGUA CLARIFICADA"; Grupo: "Clarificada"; ColorHex: "#0EA5E9"};
+    {Titulo: "AGUA CONSUMIDA";   Grupo: "Consumida";   ColorHex: "#F59E0B"}
+)
+```
+
+Dentro, contenedor vertical con banda de color y cinco etiquetas:
+
+```powerfx
+// recBandaKPI.Fill
+ColorValue(ThisItem.ColorHex)
+
+// lblKPITitulo.Text
+ThisItem.Titulo
+
+// lblKPITotal.Text
+With(
+    { _t: Sum(Filter(frDias; Grupo = ThisItem.Grupo); M3Dia) };
+    Text(_t; "#.##0,00"; "es-ES") & " m³"
+)
+
+// lblKPIDia.Text
+With(
+    { _t: Sum(Filter(frDias; Grupo = ThisItem.Grupo); M3Dia) };
+    "Día:  " & Text(_t / frNumDias; "#.##0,00"; "es-ES") & " m³"
+)
+
+// lblKPISemana.Text
+With(
+    { _t: Sum(Filter(frDias; Grupo = ThisItem.Grupo); M3Dia) };
+    "Semana:  " & Text(_t / frNumSemanas; "#.##0,00"; "es-ES") & " m³"
+)
+
+// lblKPIMes.Text
+With(
+    { _t: Sum(Filter(frDias; Grupo = ThisItem.Grupo); M3Dia) };
+    "Mes:  " & Text(_t / frNumMeses; "#.##0,00"; "es-ES") & " m³"
+)
+
+// lblKPIHora.Text
+With(
+    { _t: Sum(Filter(frDias; Grupo = ThisItem.Grupo); M3Dia) };
+    "Hora:  " & Text(_t / frNumHoras; "#.##0,000"; "es-ES") & " m³/h"
+)
+```
+
+**Una cuarta tarjeta que vale la pena**, porque es la pregunta que siempre sale en reunión:
+
+```powerfx
+// lblAnaBalance.Text
+"Bombeada − Consumida:  " &
+Text(frBombeada - frConsumida; "#.##0,00"; "es-ES") & " m³   (" &
+Text(If(frBombeada > 0; (frBombeada - frConsumida) / frBombeada; 0); "0,0%"; "es-ES") & " sin explicar)"
+
+// lblAnaBalance.Color
+If(
+    frBombeada > 0 And (frBombeada - frConsumida) / frBombeada > 0,35;
+    RGBA(220; 38; 38; 1);
+    RGBA(5; 150; 105; 1)
+)
+```
+
+### 6.5 Gráficos circulares
+
+Power Apps trae **Gráfico de columnas, Gráfico de líneas y Gráfico circular** (clásicos). Insertar → Gráficos. En los tres, la **primera columna son las etiquetas** y la segunda los valores.
+
+**`pieAnaBombeo` — de dónde viene el agua bombeada**
+```powerfx
+ForAll(
+    Sort(Filter(colGrupos; Grupo = "Bombeada"); Orden; Ascending) As G;
+    {
+        Fuente: G.Etiqueta;
+        M3: Sum(Filter(frDias; Equipo = G.Equipo); M3Dia)
+    }
+)
+```
+
+**`pieAnaConsumo` — a dónde va el agua consumida**
+```powerfx
+ForAll(
+    Sort(Filter(colGrupos; Grupo = "Consumida"); Orden; Ascending) As G;
+    {
+        Destino: G.Etiqueta;
+        M3: Sum(Filter(frDias; Equipo = G.Equipo); M3Dia)
+    }
+)
+```
+
+**`pieAnaClarificada` — aporte de cada clarificador**
+```powerfx
+ForAll(
+    Sort(Filter(colGrupos; Grupo = "Clarificada"); Orden; Ascending) As G;
+    {
+        Clarificador: G.Etiqueta;
+        M3: Sum(Filter(frDias; Equipo = G.Equipo); M3Dia)
+    }
+)
+```
+
+### 6.6 Gráfico de columnas por granularidad — `colAnaSerie`
+
+`NumberOfSeries: 3`.
+
+```powerfx
+// Items
+Switch(
+    varGranularidad;
+
+    "Mes";
+        ForAll(
+            Sort(Distinct(frDias; IniMes); Value; Ascending) As S;
+            {
+                Eje:         Text(S.Value; "mmm yyyy"; "es-ES");
+                Bombeada:    Sum(Filter(frDias; IniMes = S.Value; Grupo = "Bombeada"); M3Dia);
+                Clarificada: Sum(Filter(frDias; IniMes = S.Value; Grupo = "Clarificada"); M3Dia);
+                Consumida:   Sum(Filter(frDias; IniMes = S.Value; Grupo = "Consumida"); M3Dia)
+            }
+        );
+
+    "Semana";
+        ForAll(
+            Sort(Distinct(frDias; IniSemana); Value; Ascending) As S;
+            {
+                Eje:         Text(S.Value; "dd/mm"; "es-ES");
+                Bombeada:    Sum(Filter(frDias; IniSemana = S.Value; Grupo = "Bombeada"); M3Dia);
+                Clarificada: Sum(Filter(frDias; IniSemana = S.Value; Grupo = "Clarificada"); M3Dia);
+                Consumida:   Sum(Filter(frDias; IniSemana = S.Value; Grupo = "Consumida"); M3Dia)
+            }
+        );
+
+    "Dia";
+        ForAll(
+            FirstN(Sort(Distinct(frDias; Fecha); Value; Ascending); 45) As S;
+            {
+                Eje:         Text(S.Value; "dd/mm"; "es-ES");
+                Bombeada:    Sum(Filter(frDias; Fecha = S.Value; Grupo = "Bombeada"); M3Dia);
+                Clarificada: Sum(Filter(frDias; Fecha = S.Value; Grupo = "Clarificada"); M3Dia);
+                Consumida:   Sum(Filter(frDias; Fecha = S.Value; Grupo = "Consumida"); M3Dia)
+            }
+        );
+
+    "Hora";
+        ForAll(
+            Sort(Distinct(frDias; IniSemana); Value; Ascending) As S;
+            {
+                Eje:         Text(S.Value; "dd/mm"; "es-ES");
+                Bombeada:    Sum(Filter(frDias; IniSemana = S.Value; Grupo = "Bombeada"); M3Dia) / 168;
+                Clarificada: Sum(Filter(frDias; IniSemana = S.Value; Grupo = "Clarificada"); M3Dia) / 168;
+                Consumida:   Sum(Filter(frDias; IniSemana = S.Value; Grupo = "Consumida"); M3Dia) / 168
+            }
+        )
+)
+```
+
+**Dos advertencias sobre este gráfico:**
+
+1. El gráfico clásico dibuja **como máximo unos 50 puntos**. Por eso la vista de día lleva `FirstN(...; 45)`. Para rangos largos usa Semana o Mes; la vista diaria es para un mes o menos.
+2. **La vista por hora tiene un límite real y prefiero decírtelo de frente:** de una lectura tomada cada 7 días no hay forma de saber qué pasó a las 3 de la tarde del martes. Lo que sí se calcula, y es lo que hace la fórmula, es el **caudal promedio por hora** (m³ ÷ 168 h de la semana). Para tener consumo hora por hora de verdad harían falta contadores con registro automático, o registrar la lectura varias veces al día. Mientras tanto el promedio horario sirve para dimensionar bombas y comparar semanas entre sí, que es para lo que normalmente se usa.
+
+### 6.7 Tabla de detalle — `galAnaDetalle`
+
+Encabezados en un contenedor horizontal y la galería debajo.
+
+```powerfx
+// Items
+ForAll(
+    Sort(Filter(colGrupos; Grupo <> "Excluir"); Orden; Ascending) As G;
+    With(
+        { _t: Sum(Filter(frDias; Equipo = G.Equipo); M3Dia) };
+        {
+            Equipo:    G.Equipo;
+            Etiqueta:  G.Etiqueta;
+            Grupo:     G.Grupo;
+            ColorHex:  G.ColorHex;
+            Total:     _t;
+            PorDia:    _t / frNumDias;
+            PorSemana: _t / frNumSemanas;
+            PorMes:    _t / frNumMeses;
+            PorHora:   _t / frNumHoras;
+            Costo:     Sum(Filter(frDias; Equipo = G.Equipo); CostoDia);
+            PorcGrupo: If(
+                    
