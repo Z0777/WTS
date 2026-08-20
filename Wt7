@@ -1,0 +1,481 @@
+# Pestaña de Análisis — lógica corregida
+### Errores de sintaxis, filtrado dinámico y tabla que cambia con la granularidad
+
+> Acompaña al prototipo `BTI_PowerApps_Analisis_Prototipo.html`. Ábrelo primero: ahí ves exactamente el comportamiento que deben tener los botones.
+
+---
+
+## PARTE 0 · Reglas de sintaxis que voy a respetar de aquí en adelante
+
+Estas son las que te estaban rompiendo las fórmulas:
+
+| Regla | Mal | Bien |
+|---|---|---|
+| Orden de `Sort` | `Sort(t; Col; Ascending)` | `Sort(t; Col; SortOrder.Ascending)` |
+| Nombres de columna en `GroupBy` / `Ungroup` | `GroupBy(t; Fecha; Datos)` | `GroupBy(t; "Fecha"; "Datos")` con comillas |
+| Separador de argumentos | `Filter(t, a, b)` | `Filter(t; a; b)` |
+| Encadenar acciones | solo en propiedades de comportamiento | `;;` únicamente en `OnSelect`, `OnChange`, `OnStart`, `OnVisible` |
+| Decimales sueltos | `30,4` puede leerse como dos argumentos | escribe `304 / 10`, `35 / 100` |
+| Enumeraciones | `Ascending`, `Descending` | `SortOrder.Ascending`, `SortOrder.Descending` |
+
+**El error "La fórmula contiene *Comma* donde se esperaba *ParenClose*"** casi siempre es una de dos cosas: una coma que quedó como separador de argumentos, o un decimal escrito con coma que el analizador partió en dos. Por eso en todo lo que sigue **no hay ni un solo decimal literal**: donde hacía falta 30,4 verás `304 / 10`.
+
+**El error "Se esperaba un operador"** viene de `;;` puesto en una propiedad que no es de comportamiento. Si lo pegas en `Items`, `Text` o `Fill`, truena.
+
+---
+
+## PARTE 1 · Por qué los botones no filtran
+
+Los botones de granularidad **nunca cambiaron el rango de fechas**, y ese era el problema de diseño: solo cambiaban el eje del gráfico. Todo lo demás — tarjetas, pies, tabla — seguía leyendo `varAnaIni` / `varAnaFin`, que solo se movían con los date pickers.
+
+La separación correcta de responsabilidades es esta:
+
+| Control | Qué controla |
+|---|---|
+| **Galería de meses** (arriba) | **El rango de fechas.** `TODOS` = todo el año; un mes = ese mes |
+| **Botones Mes / Semana / Día / Hora** | **Cómo se agrupa** lo que ya quedó filtrado: tabla, gráfico y el promedio de las tarjetas |
+| **Date pickers** | Override opcional para un rango que no cae en un mes completo |
+
+Con eso, `TODOS` + `Día` te muestra el detalle diario de todo el año sin tocar un date picker, que es justo lo que pediste.
+
+---
+
+## PARTE 2 · `App.OnStart` — que todo salga ya filtrado
+
+Después del bloque que construye `colDias`, agrega:
+
+```powerfx
+Set(varMinFecha; First(Sort(colDias; Fecha; SortOrder.Ascending)).Fecha);;
+Set(varMaxFecha; First(Sort(colDias; Fecha; SortOrder.Descending)).Fecha);;
+Set(varAnaAnio; Year(varMaxFecha));;
+Set(varMesSel; 0);;
+Set(varAnaIni; Date(varAnaAnio; 1; 1));;
+Set(varAnaFin; Date(varAnaAnio; 12; 31));;
+Set(varGranularidad; "Mes")
+```
+
+Arranca en **TODOS + Mes**, con el año que tenga datos más recientes. Sin tocar nada, ya se ve todo.
+
+### Un ajuste al bloque de `colDias`
+
+En el **paso 3** agrega dos campos, que la tabla dinámica necesita:
+
+```powerfx
+            Sub: ForAll(
+                Sequence(P.Dias) As S;
+                {
+                    Equipo:     P.Equipo;
+                    Fecha:      DateAdd(P.FechaIni; S.Value; TimeUnit.Days);
+                    M3Dia:      P.M3Dia;
+                    HorasDia:   P.HorasDia;
+                    CostoDia:   P.CostoDia;
+                    EsLectura:  S.Value = P.Dias;
+                    DiasPeriodo: P.Dias
+                }
+            )
+```
+
+`EsLectura` marca el día que sí tuvo lectura real; los otros días del período son prorrateo. En el **paso 4**, arrástralos al registro final:
+
+```powerfx
+                EsLectura:   D.EsLectura;
+                DiasPeriodo: D.DiasPeriodo;
+```
+
+---
+
+## PARTE 3 · Fórmulas con nombre corregidas
+
+Reemplaza el bloque completo de `App.Formulas`:
+
+```powerfx
+frDias = Filter(colDias; Fecha >= varAnaIni; Fecha <= varAnaFin);
+
+frNumDias    = Max(DateDiff(varAnaIni; varAnaFin; TimeUnit.Days) + 1; 1);
+frNumSemanas = frNumDias / 7;
+frNumMeses   = frNumDias * 10 / 304;
+frNumHoras   = frNumDias * 24;
+
+frBombeada    = Sum(Filter(frDias; Grupo = "Bombeada"); M3Dia);
+frClarificada = Sum(Filter(frDias; Grupo = "Clarificada"); M3Dia);
+frConsumida   = Sum(Filter(frDias; Grupo = "Consumida"); M3Dia);
+
+frDivisor =
+Switch(
+    varGranularidad;
+    "Dia";    frNumDias;
+    "Semana"; frNumSemanas;
+    "Hora";   frNumHoras;
+    frNumMeses
+);
+
+frTextoGran =
+Switch(
+    varGranularidad;
+    "Dia";    "por día";
+    "Semana"; "por semana";
+    "Hora";   "por hora";
+    "por mes"
+);
+
+frDecGran = If(varGranularidad = "Hora"; "#.##0,000"; "#.##0,00");
+
+frClaves =
+Switch(
+    varGranularidad;
+    "Dia";    Sort(Distinct(frDias; Fecha); Value; SortOrder.Ascending);
+    "Semana"; Sort(Distinct(frDias; IniSemana); Value; SortOrder.Ascending);
+    Sort(Distinct(frDias; IniMes); Value; SortOrder.Ascending)
+);
+
+frTabla =
+ForAll(
+    frClaves As K;
+    With(
+        {
+            _sub: Switch(
+                varGranularidad;
+                "Dia";    Filter(frDias; Fecha = K.Value);
+                "Semana"; Filter(frDias; IniSemana = K.Value);
+                Filter(frDias; IniMes = K.Value)
+            )
+        };
+        With(
+            {
+                _b: Sum(Filter(_sub; Grupo = "Bombeada"); M3Dia);
+                _c: Sum(Filter(_sub; Grupo = "Clarificada"); M3Dia);
+                _s: Sum(Filter(_sub; Grupo = "Consumida"); M3Dia)
+            };
+            {
+                Clave: K.Value;
+                Etiqueta: Switch(
+                    varGranularidad;
+                    "Dia";    Text(K.Value; "dd/mm/yyyy"; "es-ES");
+                    "Semana"; "Sem " & Text(K.Value; "dd/mm"; "es-ES");
+                    Text(K.Value; "mmmm yyyy"; "es-ES")
+                );
+                Bombeada:    _b;
+                Clarificada: _c;
+                Consumida:   _s;
+                Balance:     _b - _s;
+                PorcCons:    If(_b > 0; _s / _b; 0);
+                Lecturas:    CountRows(Filter(_sub; EsLectura))
+            }
+        )
+    )
+);
+```
+
+> **Nota sobre la vista Hora:** el `Switch` de `frClaves` y de `frTabla` no tiene rama `"Hora"`, así que cae en la rama por defecto y la tabla se queda **mensual**. Es lo que pediste, y además es lo correcto: no existen lecturas horarias, y una tabla de 2.160 renglones por mes no le sirve a nadie.
+
+---
+
+## PARTE 4 · Los controles, con la estructura que pediste
+
+Orden dentro de `conAnalisisAgua`, de arriba abajo:
+
+```
+1. galAnaMeses          (galería de meses, con contenedor adentro)
+2. conAnaControles      (año + granularidad + date pickers + actualizar)
+3. galAnaKPI            (tarjetas, con contenedor adentro)
+4. conAnaPies           (tres gráficos circulares)
+5. conAnaTabla          (encabezados + galería dinámica)
+```
+
+### 4.1 `galAnaMeses` — galería de meses arriba
+
+`Height: 46`, `TemplateSize: 82`, `WrapCount: 13`, `ShowScrollbar: false`, `FillPortions: 0`.
+
+```powerfx
+// Items — usa Nombre para mostrar y N para la lógica
+Table(
+    {N: 0;  Nombre: "TODOS"};
+    {N: 1;  Nombre: "Ene"}; {N: 2;  Nombre: "Feb"}; {N: 3;  Nombre: "Mar"};
+    {N: 4;  Nombre: "Abr"}; {N: 5;  Nombre: "May"}; {N: 6;  Nombre: "Jun"};
+    {N: 7;  Nombre: "Jul"}; {N: 8;  Nombre: "Ago"}; {N: 9;  Nombre: "Sep"};
+    {N: 10; Nombre: "Oct"}; {N: 11; Nombre: "Nov"}; {N: 12; Nombre: "Dic"}
+)
+```
+
+Dentro de la galería, **un contenedor** `conItemMes` (AutoLayout vertical, `Width: Parent.TemplateWidth - 6`, `Height: 38`) y adentro el botón `btnAnaMes`:
+
+```powerfx
+// btnAnaMes.Text
+ThisItem.Nombre
+
+// btnAnaMes.Fill
+If(varMesSel = ThisItem.N; RGBA(37; 99; 235; 1); RGBA(241; 245; 249; 1))
+
+// btnAnaMes.Color
+If(varMesSel = ThisItem.N; RGBA(255; 255; 255; 1); RGBA(71; 85; 105; 1))
+
+// btnAnaMes.DisplayMode
+If(
+    ThisItem.N = 0 Or CountRows(Filter(colDias; Anio = varAnaAnio; NumMes = ThisItem.N)) > 0;
+    DisplayMode.Edit;
+    DisplayMode.Disabled
+)
+
+// btnAnaMes.OnSelect
+Set(varMesSel; ThisItem.N);;
+Set(varAnaIni; If(ThisItem.N = 0; Date(varAnaAnio; 1; 1); Date(varAnaAnio; ThisItem.N; 1)));;
+Set(varAnaFin; If(ThisItem.N = 0; Date(varAnaAnio; 12; 31); DateAdd(DateAdd(varAnaIni; 1; TimeUnit.Months); -1; TimeUnit.Days)));;
+Reset(dpAnaIni);;
+Reset(dpAnaFin)
+```
+
+`Reset` de los date pickers es lo que faltaba: sin eso el picker se queda con la fecha vieja y parece que el botón no hizo nada.
+
+### 4.2 `conAnaControles` — el resto de botones
+
+Contenedor horizontal, `Height: 52`, `FillPortions: 0`. Aquí **ya no van los meses**, están arriba.
+
+**Año** — `cmbAnaAnio`
+```powerfx
+// Items
+Sort(Distinct(colDias; Anio); Value; SortOrder.Descending)
+
+// ItemDisplayText
+ThisItem.Value
+
+// OnChange
+Set(varAnaAnio; cmbAnaAnio.Selected.Value);;
+Set(varAnaIni; If(varMesSel <= 0; Date(varAnaAnio; 1; 1); Date(varAnaAnio; varMesSel; 1)));;
+Set(varAnaFin; If(varMesSel <= 0; Date(varAnaAnio; 12; 31); DateAdd(DateAdd(varAnaIni; 1; TimeUnit.Months); -1; TimeUnit.Days)));;
+Reset(dpAnaIni);;
+Reset(dpAnaFin)
+```
+
+**Granularidad** — cuatro `Classic/Button`. Cambia solo el literal en cada uno:
+```powerfx
+// btnGranMes    -> "Mes"
+// btnGranSemana -> "Semana"
+// btnGranDia    -> "Dia"      (Text: "Día")
+// btnGranHora   -> "Hora"
+
+// Fill
+If(varGranularidad = "Mes"; RGBA(13; 50; 61; 1); RGBA(226; 232; 240; 1))
+
+// Color
+If(varGranularidad = "Mes"; RGBA(255; 255; 255; 1); RGBA(51; 65; 85; 1))
+
+// OnSelect
+Set(varGranularidad; "Mes")
+```
+
+**Date pickers** — opcionales
+```powerfx
+// dpAnaIni.DefaultDate  -> varAnaIni
+// dpAnaFin.DefaultDate  -> varAnaFin
+// Format                -> "dd/mm/yyyy"
+
+// dpAnaIni.OnChange
+Set(varAnaIni; Self.SelectedDate);; Set(varMesSel; -1)
+
+// dpAnaFin.OnChange
+Set(varAnaFin; Self.SelectedDate);; Set(varMesSel; -1)
+```
+
+**Etiqueta del rango activo** — `lblAnaRango`, para que nunca haya duda de qué se está viendo
+```powerfx
+If(varMesSel = 0; "Todo " & varAnaAnio;
+   If(varMesSel = -1; "Rango libre"; Text(varAnaIni; "mmmm yyyy"; "es-ES")))
+& "  ·  " & Text(varAnaIni; "dd/mm/yyyy"; "es-ES")
+& " a " & Text(varAnaFin; "dd/mm/yyyy"; "es-ES")
+& "  ·  " & frNumDias & " días  ·  agrupado " & frTextoGran
+```
+
+### 4.3 `galAnaKPI` — tarjetas dinámicas
+
+`Height: 165`, `TemplateSize: 150`, `WrapCount: 4`, `ShowScrollbar: false`.
+
+```powerfx
+// Items
+Table(
+    {Titulo: "AGUA BOMBEADA";    Grupo: "Bombeada";    ColorHex: "#1D4ED8"};
+    {Titulo: "AGUA CLARIFICADA"; Grupo: "Clarificada"; ColorHex: "#0EA5E9"};
+    {Titulo: "AGUA CONSUMIDA";   Grupo: "Consumida";   ColorHex: "#F59E0B"}
+)
+```
+
+Dentro, **un contenedor** `conItemKPI` (AutoLayout vertical, `LayoutGap: 2`, `Width: Parent.TemplateWidth - 8`, borde `ColorValue("#E2E8F0")`), y adentro:
+
+```powerfx
+// recBandaKPI.Fill        -> ColorValue(ThisItem.ColorHex)   (Height 5)
+// lblKPITitulo.Text       -> ThisItem.Titulo
+
+// lblKPITotal.Text
+Text(Sum(Filter(frDias; Grupo = ThisItem.Grupo); M3Dia); "#.##0,00"; "es-ES") & " m³"
+
+// lblKPITotal.Color
+ColorValue(ThisItem.ColorHex)
+
+// lblKPIDia.Text
+"Día:  " & Text(Sum(Filter(frDias; Grupo = ThisItem.Grupo); M3Dia) / frNumDias; "#.##0,00"; "es-ES")
+
+// lblKPISemana.Text
+"Semana:  " & Text(Sum(Filter(frDias; Grupo = ThisItem.Grupo); M3Dia) / frNumSemanas; "#.##0,00"; "es-ES")
+
+// lblKPIMes.Text
+"Mes:  " & Text(Sum(Filter(frDias; Grupo = ThisItem.Grupo); M3Dia) / frNumMeses; "#.##0,00"; "es-ES")
+
+// lblKPIHora.Text
+"Hora:  " & Text(Sum(Filter(frDias; Grupo = ThisItem.Grupo); M3Dia) / frNumHoras; "#.##0,000"; "es-ES")
+
+// ---- el renglón que reacciona a los botones de granularidad ----
+// lblKPIGran.Text
+"Promedio " & frTextoGran & ":  " &
+Text(Sum(Filter(frDias; Grupo = ThisItem.Grupo); M3Dia) / frDivisor; frDecGran; "es-ES") & " m³"
+
+// lblKPIGran.Fill   -> RGBA(248; 250; 252; 1)
+// lblKPIGran.Color  -> ColorValue(ThisItem.ColorHex)
+```
+
+**Cuarta tarjeta, fuera de la galería** — `conKPIBalance`:
+```powerfx
+// lblBalValor.Text
+Text(frBombeada - frConsumida; "#.##0,00"; "es-ES") & " m³"
+
+// lblBalValor.Color
+If(
+    frBombeada > 0 And (frBombeada - frConsumida) / frBombeada > 35 / 100;
+    RGBA(220; 38; 38; 1);
+    RGBA(5; 150; 105; 1)
+)
+
+// lblBalPorc.Text
+"Bombeada − Consumida:  " & Text(If(frBombeada > 0; (frBombeada - frConsumida) / frBombeada; 0); "0,0%"; "es-ES")
+
+// lblBalClar.Text
+"Clarificada / Bombeada:  " & Text(If(frBombeada > 0; frClarificada / frBombeada; 0); "0,0%"; "es-ES")
+
+// lblBalCons.Text
+"Consumida / Clarificada:  " & Text(If(frClarificada > 0; frConsumida / frClarificada; 0); "0,0%"; "es-ES")
+
+// lblBalLect.Text
+"Lecturas en el rango:  " & CountRows(Filter(frDias; EsLectura))
+```
+
+### 4.4 Gráficos circulares con porcentaje
+
+El gráfico circular clásico **no muestra el porcentaje**. La forma de tenerlo es meterlo en la etiqueta:
+
+```powerfx
+// pieAnaBombeo.Items
+With(
+    { _tot: frBombeada };
+    ForAll(
+        Sort(Filter(colGrupos; Grupo = "Bombeada"); Orden; SortOrder.Ascending) As G;
+        With(
+            { _v: Sum(Filter(frDias; Equipo = G.Equipo); M3Dia) };
+            {
+                Fuente: G.Etiqueta & "  " & Text(If(_tot > 0; _v / _tot; 0); "0,0%"; "es-ES");
+                M3: _v
+            }
+        )
+    )
+)
+```
+
+```powerfx
+// pieAnaClarificada.Items
+With(
+    { _tot: frClarificada };
+    ForAll(
+        Sort(Filter(colGrupos; Grupo = "Clarificada"); Orden; SortOrder.Ascending) As G;
+        With(
+            { _v: Sum(Filter(frDias; Equipo = G.Equipo); M3Dia) };
+            {
+                Clarificador: G.Etiqueta & "  " & Text(If(_tot > 0; _v / _tot; 0); "0,0%"; "es-ES");
+                M3: _v
+            }
+        )
+    )
+)
+```
+
+```powerfx
+// pieAnaConsumo.Items
+With(
+    { _tot: frConsumida };
+    ForAll(
+        Sort(Filter(colGrupos; Grupo = "Consumida"); Orden; SortOrder.Ascending) As G;
+        With(
+            { _v: Sum(Filter(frDias; Equipo = G.Equipo); M3Dia) };
+            {
+                Destino: G.Etiqueta & "  " & Text(If(_tot > 0; _v / _tot; 0); "0,0%"; "es-ES");
+                M3: _v
+            }
+        )
+    )
+)
+```
+
+Y activa `ShowLabels: true` en los tres. Si aun así se ven apretadas, pon `ShowLabels: false` y arma la leyenda con una galería al lado usando el mismo `Items`.
+
+### 4.5 Tabla dinámica
+
+Encabezados en un contenedor horizontal, con texto que cambia solo:
+
+```powerfx
+// lblThPeriodo.Text
+Switch(varGranularidad; "Dia"; "DÍA"; "Semana"; "SEMANA"; "MES")
+```
+El resto fijos: `BOMBEADA m³`, `CLARIFICADA m³`, `CONSUMIDA m³`, `BALANCE m³`, `% CONS/BOMB`, `ORIGEN`.
+
+```powerfx
+// galAnaTabla.Items
+frTabla
+```
+
+Etiquetas de la fila:
+```powerfx
+// lblTbPeriodo.Text -> ThisItem.Etiqueta
+// lblTbBomb.Text    -> Text(ThisItem.Bombeada; "#.##0,00"; "es-ES")
+// lblTbClar.Text    -> Text(ThisItem.Clarificada; "#.##0,00"; "es-ES")
+// lblTbCons.Text    -> Text(ThisItem.Consumida; "#.##0,00"; "es-ES")
+// lblTbBal.Text     -> Text(ThisItem.Balance; "#.##0,00"; "es-ES")
+// lblTbPorc.Text    -> Text(ThisItem.PorcCons; "0,0%"; "es-ES")
+
+// lblTbOrigen.Text
+If(ThisItem.Lecturas > 0; ThisItem.Lecturas & " lectura(s)"; "prorrateado")
+
+// lblTbOrigen.Color
+If(ThisItem.Lecturas > 0; RGBA(22; 101; 52; 1); RGBA(7; 89; 133; 1))
+
+// lblTbBal.Color
+If(ThisItem.Balance < 0; RGBA(220; 38; 38; 1); RGBA(51; 65; 85; 1))
+```
+
+Fila de totales al pie, fuera de la galería:
+```powerfx
+// lblTotBomb.Text -> Text(frBombeada; "#.##0,00"; "es-ES")
+// lblTotClar.Text -> Text(frClarificada; "#.##0,00"; "es-ES")
+// lblTotCons.Text -> Text(frConsumida; "#.##0,00"; "es-ES")
+// lblTotBal.Text  -> Text(frBombeada - frConsumida; "#.##0,00"; "es-ES")
+```
+
+**La columna Origen es la que te da la lectura honesta del dato:** en vista diaria vas a ver que la mayoría de los días dicen "prorrateado" y solo uno por semana dice "1 lectura". Eso no es un defecto del tablero, es el estado real de la medición, y tenerlo a la vista evita que alguien tome el promedio diario como si fuera un dato medido.
+
+---
+
+## PARTE 5 · Un hallazgo de los datos que conviene revisar
+
+Corriendo el prototipo con tus lecturas de abril a julio:
+
+| Grupo | m³ |
+|---|---|
+| Bombeada (CONT01 + CONT02 + Pozo + Presa + Áreas Verdes) | **25.034** |
+| Clarificada (CONT03 + CONT05) | **31.972** |
+| Consumida (RD + CNP + Servicios) | **20.011** |
+
+**El agua clarificada supera en 28 % a la bombeada, y eso es físicamente imposible:** no puede salir de los clarificadores más agua de la que entró a la estación. CONT05 por sí solo reporta 23.072 m³ en el período, más que CONT01 y CONT02 juntos.
+
+Las causas probables, en orden:
+
+1. **Multiplicador mal aplicado en CONT05.** Si ese contador es ×10 y se está guardando la lectura cruda, o al revés, el número se dispara. Revisa `MULTIPLICADOR` en `EQUIPOS_AGUA` para ese equipo.
+2. **El clarificador 2 recibe agua de otra fuente** que no pasa por CONT01 ni CONT02, y entonces falta un contador de entrada en el modelo.
+3. **CONT04 (entrada del clarificador 2)** sí debería estar en Bombeada porque mide agua que no pasó por el bombeo principal. Si ese es el caso, cambia su `Grupo` de `"Excluir"` a `"Bombeada"` en `colGrupos` y vuelve a mirar el balance.
+
+Es un cambio de una línea en la colección, y el tablero completo se recalcula. Cuando lo confirmes en campo me dices y ajustamos la clasificación.
+
