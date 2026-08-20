@@ -1,0 +1,546 @@
+# Código completo — `App.OnStart`, `App.Formulas` y las dos tablas
+
+---
+
+## PARTE 0 · Respuesta directa sobre el tipo de tabla
+
+**Lo que ya estás haciendo es lo correcto y no hay que cambiarlo.**
+
+En Power Apps no existe una cuadrícula que acepte columnas dinámicas y formato condicional. Las opciones reales son tres:
+
+| Opción | Sirve aquí |
+|---|---|
+| **Galería vertical + contenedor horizontal por fila** | **Sí.** Es lo que usas. Da forma de tabla, permite líneas, colores por valor, y acepta cualquier colección calculada |
+| Control "Tabla de datos" (Data table) | No. No acepta formato condicional ni columnas que cambien de encabezado, y se lleva mal con colecciones calculadas |
+| Tabla moderna (vista previa) | Todavía no. Mismas limitaciones de formato |
+
+Entonces las **dos tablas van con la misma estructura que ya tienes**:
+
+```
+Contenedor vertical  (la tabla completa)
+├── Contenedor horizontal   → encabezados
+└── Galería vertical        → Items = la fórmula con nombre
+    └── Contenedor horizontal   → una fila
+        ├── Label  (columna 1)
+        ├── Label  (columna 2)
+        └── ...
+```
+
+Para las líneas: al contenedor horizontal de cada fila ponle `BorderThickness: 1` abajo, o más simple, `Fill` alternado:
+```powerfx
+// conFila.Fill
+If(Mod(ThisItem.Indice; 2) = 0; RGBA(248; 250; 252; 1); RGBA(255; 255; 255; 1))
+```
+Por eso en las dos fórmulas de abajo agregué una columna `Indice`.
+
+**La diferencia entre las dos tablas:**
+
+| Tabla | Un renglón por | Responde a la granularidad |
+|---|---|---|
+| **Tabla 1 — por período** | mes / semana / día | Cambian los renglones |
+| **Tabla 2 — por contador** | contador | Cambia la columna de promedio y su encabezado |
+
+---
+
+## PARTE 1 · `App.OnStart` completo
+
+Reemplaza todo tu `OnStart` por esto. Las primeras líneas son las tuyas, sin cambios.
+
+```powerfx
+// ══════════════ 1. CONFIGURACION EXISTENTE ══════════════
+Set(varCapTanqueTratada; 487);;
+Set(varNumTanquesTratada; 3);;
+Set(varCapTotalTratada; 487 * 3);;
+Set(varCapTanqueNoTratada; 487);;
+Set(varClar1GPM; 50);;
+Set(varClar2GPM; 125);;
+Set(varFechaInicio; DateAdd(Today(); -30; TimeUnit.Days));;
+Set(varFechaFin; Today());;
+Set(varSeccionActiva; "Registro");;
+Set(varFiltroSistema; "Todos");;
+Set(varFiltroCategoria; "Todas");;
+Set(varFiltroTipoAgua; "Todas");;
+Set(varBusqueda; "");;
+Set(varMenuExpandido; true);;
+Set(varMostrarPopupRegistro; false);;
+Set(varMostrarPopupDosis; false);;
+Set(varEquipoSeleccionado; Blank());;
+Set(varLecturaSeleccionada; Blank());;
+Set(varTarifa; LookUp(TARIFAS; ACTIVO = true));;
+Set(varTarifaKWh; Coalesce(varTarifa.TARIFA_KWH; 185 / 100));;
+
+// ══════════════ 2. CATALOGO DE CONTADORES ══════════════
+// Se edita aqui. Cambiar un Grupo recalcula todo el analisis.
+ClearCollect(
+    colGrupos;
+    {Equipo: "CONT01"; Grupo: "Bombeada";    Sistema: "A - Principal";     Etiqueta: "Bombeo Principal";       Orden: 1;  ColorHex: "#1D4ED8"};
+    {Equipo: "CONT02"; Grupo: "Bombeada";    Sistema: "A - Principal";     Etiqueta: "Bombeo Auxiliar";        Orden: 2;  ColorHex: "#3B82F6"};
+    {Equipo: "CONT10"; Grupo: "Bombeada";    Sistema: "C - Pozo";          Etiqueta: "Pozo";                   Orden: 3;  ColorHex: "#0891B2"};
+    {Equipo: "CONT11"; Grupo: "Bombeada";    Sistema: "B - Campo Abierto"; Etiqueta: "Presa Campo Abierto";    Orden: 4;  ColorHex: "#8B5CF6"};
+    {Equipo: "CONT13"; Grupo: "Bombeada";    Sistema: "D - Areas Verdes";  Etiqueta: "Areas Verdes";           Orden: 5;  ColorHex: "#16A34A"};
+
+    {Equipo: "CONT03"; Grupo: "Clarificada"; Sistema: "A - Principal";     Etiqueta: "Clarificador 1 Salida";  Orden: 6;  ColorHex: "#0EA5E9"};
+    {Equipo: "CONT05"; Grupo: "Clarificada"; Sistema: "A - Principal";     Etiqueta: "Clarificador 2 Salida";  Orden: 7;  ColorHex: "#38BDF8"};
+
+    {Equipo: "CONT07"; Grupo: "Consumida";   Sistema: "A - Principal";     Etiqueta: "Salida RD";              Orden: 8;  ColorHex: "#F59E0B"};
+    {Equipo: "CONT06"; Grupo: "Consumida";   Sistema: "A - Principal";     Etiqueta: "Salida CNP";             Orden: 9;  ColorHex: "#FB923C"};
+    {Equipo: "CONT08"; Grupo: "Consumida";   Sistema: "A - Principal";     Etiqueta: "Agua de Servicios";      Orden: 10; ColorHex: "#FDBA74"};
+
+    {Equipo: "CONT12"; Grupo: "Otros";       Sistema: "B - Campo Abierto"; Etiqueta: "Riego Campo Abierto";    Orden: 11; ColorHex: "#94A3B8"};
+    {Equipo: "CONT09"; Grupo: "Otros";       Sistema: "A - Principal";     Etiqueta: "P. Mayores";             Orden: 12; ColorHex: "#A8A29E"};
+
+    {Equipo: "CONT04"; Grupo: "Excluir";     Sistema: "A - Principal";     Etiqueta: "Clarificador 2 Entrada"; Orden: 90; ColorHex: "#E2E8F0"};
+    {Equipo: "BOMB01"; Grupo: "Excluir";     Sistema: "A - Principal";     Etiqueta: "Bomba (no contabiliza)"; Orden: 91; ColorHex: "#E2E8F0"}
+);;
+
+// ══════════════ 3. LECTURAS NORMALIZADAS ══════════════
+ClearCollect(
+    colLect;
+    ForAll(
+        Sort(REGISTROS_AGUA; FECHA_LECTURA; SortOrder.Ascending) As R;
+        {
+            Equipo: Upper(Trim(Coalesce(R.ID_EQUIPOS; "")));
+            Fecha:  DateValue(Text(R.FECHA_LECTURA; "dd/mm/yyyy"); "es-ES");
+            M3:     Coalesce(R.CONSUMO_M3; 0);
+            Horas:  Coalesce(R.HORAS_OPERACION; 0);
+            Costo:  Coalesce(R.COSTO_TOTAL; 0)
+        }
+    )
+);;
+
+// ══════════════ 4. DIAS QUE ABARCA CADA LECTURA ══════════════
+ClearCollect(
+    colPeriodos;
+    ForAll(
+        Filter(colLect; M3 > 0) As A;
+        With(
+            {
+                _prev: Last(
+                    Sort(
+                        Filter(colLect; Equipo = A.Equipo; Fecha < A.Fecha);
+                        Fecha;
+                        SortOrder.Ascending
+                    )
+                ).Fecha
+            };
+            With(
+                { _dias: If(IsBlank(_prev); 1; Max(DateDiff(_prev; A.Fecha; TimeUnit.Days); 1)) };
+                {
+                    Equipo:   A.Equipo;
+                    FechaIni: DateAdd(A.Fecha; -_dias; TimeUnit.Days);
+                    Dias:     _dias;
+                    M3Dia:    A.M3 / _dias;
+                    HorasDia: A.Horas / _dias;
+                    CostoDia: A.Costo / _dias
+                }
+            )
+        )
+    )
+);;
+
+// ══════════════ 5. EXPLOTAR CADA PERIODO A DIAS ══════════════
+ClearCollect(
+    colTmp;
+    ForAll(
+        colPeriodos As P;
+        {
+            Sub: ForAll(
+                Sequence(P.Dias) As S;
+                {
+                    Equipo:      P.Equipo;
+                    Fecha:       DateAdd(P.FechaIni; S.Value; TimeUnit.Days);
+                    M3Dia:       P.M3Dia;
+                    HorasDia:    P.HorasDia;
+                    CostoDia:    P.CostoDia;
+                    EsLectura:   S.Value = P.Dias;
+                    DiasPeriodo: P.Dias
+                }
+            )
+        }
+    )
+);;
+ClearCollect(colDiasBase; Ungroup(colTmp; "Sub"));;
+
+// ══════════════ 6. CLASIFICACION Y LLAVES DE TIEMPO ══════════════
+ClearCollect(
+    colDias;
+    ForAll(
+        colDiasBase As D;
+        With(
+            { _g: LookUp(colGrupos; Equipo = D.Equipo) };
+            {
+                Equipo:      D.Equipo;
+                Fecha:       D.Fecha;
+                Anio:        Year(D.Fecha);
+                NumMes:      Month(D.Fecha);
+                IniMes:      Date(Year(D.Fecha); Month(D.Fecha); 1);
+                IniSemana:   DateAdd(D.Fecha; -(Weekday(D.Fecha; StartOfWeek.Monday) - 1); TimeUnit.Days);
+                M3Dia:       D.M3Dia;
+                HorasDia:    D.HorasDia;
+                CostoDia:    D.CostoDia;
+                EsLectura:   D.EsLectura;
+                DiasPeriodo: D.DiasPeriodo;
+                Grupo:       Coalesce(_g.Grupo; "Otros");
+                Sistema:     Coalesce(_g.Sistema; "Sin sistema");
+                Etiqueta:    Coalesce(_g.Etiqueta; D.Equipo);
+                ColorHex:    Coalesce(_g.ColorHex; "#94A3B8");
+                Orden:       Coalesce(_g.Orden; 99)
+            }
+        )
+    )
+);;
+Clear(colTmp);;
+Clear(colDiasBase);;
+Clear(colPeriodos);;
+
+// ══════════════ 7. ESTADO INICIAL DEL ANALISIS ══════════════
+Set(varMinFecha; First(Sort(colDias; Fecha; SortOrder.Ascending)).Fecha);;
+Set(varMaxFecha; First(Sort(colDias; Fecha; SortOrder.Descending)).Fecha);;
+Set(varAnaAnio; Year(Coalesce(varMaxFecha; Today())));;
+Set(varMesSel; 0);;
+Set(varAnaIni; Date(varAnaAnio; 1; 1));;
+Set(varAnaFin; Date(varAnaAnio; 12; 31));;
+Set(varGranularidad; "Mes")
+```
+
+> **Importante:** este bloque completo va también en el `OnSelect` del ícono `icnAnaActualizar`, y al final del `OnSelect` de `Button3` (guardar lectura), para que lo nuevo se vea sin recargar. Si no quieres repetirlo, deja `Set(varRecalcular; !varRecalcular)` en esos dos y pon el bloque en el `OnChange` de un `Toggle` oculto cuyo `Default` sea `varRecalcular`.
+
+---
+
+## PARTE 2 · `App.Formulas` completo
+
+Pega esto entero. Cada fórmula termina en `;`.
+
+```powerfx
+// ─────────── base filtrada por el rango activo ───────────
+frDias = Filter(colDias; Fecha >= varAnaIni; Fecha <= varAnaFin);
+
+// ─────────── tamaño del rango ───────────
+frNumDias    = Max(DateDiff(varAnaIni; varAnaFin; TimeUnit.Days) + 1; 1);
+frNumSemanas = frNumDias / 7;
+frNumMeses   = frNumDias * 10 / 304;
+frNumHoras   = frNumDias * 24;
+
+// ─────────── totales por grupo ───────────
+frBombeada    = Sum(Filter(frDias; Grupo = "Bombeada"); M3Dia);
+frClarificada = Sum(Filter(frDias; Grupo = "Clarificada"); M3Dia);
+frConsumida   = Sum(Filter(frDias; Grupo = "Consumida"); M3Dia);
+frOtros       = Sum(Filter(frDias; Grupo = "Otros"); M3Dia);
+frLecturas    = CountRows(Filter(frDias; EsLectura));
+
+// ─────────── lo que hace dinámica la granularidad ───────────
+frDivisor =
+Switch(
+    varGranularidad;
+    "Dia";    frNumDias;
+    "Semana"; frNumSemanas;
+    "Hora";   frNumHoras;
+    frNumMeses
+);
+
+frTextoGran =
+Switch(
+    varGranularidad;
+    "Dia";    "por día";
+    "Semana"; "por semana";
+    "Hora";   "por hora";
+    "por mes"
+);
+
+frTituloGran =
+Switch(
+    varGranularidad;
+    "Dia";    "PROM. DÍA";
+    "Semana"; "PROM. SEMANA";
+    "Hora";   "PROM. HORA";
+    "PROM. MES"
+);
+
+frFormatoGran = If(varGranularidad = "Hora"; "#.##0,000"; "#.##0,00");
+
+frEncPeriodo =
+Switch(
+    varGranularidad;
+    "Dia";    "DÍA";
+    "Semana"; "SEMANA";
+    "MES"
+);
+
+// ─────────── claves del período según granularidad ───────────
+frClaves =
+Switch(
+    varGranularidad;
+    "Dia";    Sort(Distinct(frDias; Fecha); Value; SortOrder.Ascending);
+    "Semana"; Sort(Distinct(frDias; IniSemana); Value; SortOrder.Ascending);
+    Sort(Distinct(frDias; IniMes); Value; SortOrder.Ascending)
+);
+
+// ═══════════ TABLA 1 — un renglón por período ═══════════
+frTabla =
+ForAll(
+    Sequence(CountRows(frClaves)) As I;
+    With(
+        { _k: Last(FirstN(frClaves; I.Value)).Value };
+        With(
+            {
+                _sub: Switch(
+                    varGranularidad;
+                    "Dia";    Filter(frDias; Fecha = _k);
+                    "Semana"; Filter(frDias; IniSemana = _k);
+                    Filter(frDias; IniMes = _k)
+                )
+            };
+            With(
+                {
+                    _b: Sum(Filter(_sub; Grupo = "Bombeada"); M3Dia);
+                    _c: Sum(Filter(_sub; Grupo = "Clarificada"); M3Dia);
+                    _s: Sum(Filter(_sub; Grupo = "Consumida"); M3Dia)
+                };
+                {
+                    Indice: I.Value;
+                    Clave:  _k;
+                    Etiqueta: Switch(
+                        varGranularidad;
+                        "Dia";    Text(_k; "dd/mm/yyyy"; "es-ES");
+                        "Semana"; "Sem " & Text(_k; "dd/mm"; "es-ES");
+                        Text(_k; "mmmm yyyy"; "es-ES")
+                    );
+                    Bombeada:    _b;
+                    Clarificada: _c;
+                    Consumida:   _s;
+                    Balance:     _b - _s;
+                    PorcCons:    If(_b > 0; _s / _b; 0);
+                    Lecturas:    CountRows(Filter(_sub; EsLectura))
+                }
+            )
+        )
+    )
+);
+
+// ═══════════ TABLA 2 — un renglón por contador ═══════════
+frTablaEquipo =
+ForAll(
+    Sequence(CountRows(Filter(colGrupos; Grupo <> "Excluir"))) As I;
+    With(
+        { _g: Last(FirstN(Sort(Filter(colGrupos; Grupo <> "Excluir"); Orden; SortOrder.Ascending); I.Value)) };
+        With(
+            { _sub: Filter(frDias; Equipo = _g.Equipo) };
+            With(
+                {
+                    _t: Sum(_sub; M3Dia);
+                    _grp: Switch(
+                        _g.Grupo;
+                        "Bombeada";    frBombeada;
+                        "Clarificada"; frClarificada;
+                        "Consumida";   frConsumida;
+                        frOtros
+                    )
+                };
+                {
+                    Indice:    I.Value;
+                    Sistema:   _g.Sistema;
+                    Contador:  _g.Equipo;
+                    Nombre:    _g.Etiqueta;
+                    Tipo:      _g.Grupo;
+                    ColorHex:  _g.ColorHex;
+                    Total:     _t;
+                    Promedio:  _t / frDivisor;
+                    PorcGrupo: If(_grp > 0; _t / _grp; 0);
+                    Lecturas:  CountRows(Filter(_sub; EsLectura));
+                    DiasDato:  CountRows(Distinct(_sub; Fecha))
+                }
+            )
+        )
+    )
+);
+```
+
+> **Por qué `Sequence` + `Last(FirstN(...))` en vez de `ForAll(tabla As X)`:** así cada renglón trae su número de fila en `Indice`, que es lo que necesitas para pintar las filas alternadas. Es el equivalente de un índice de fila, que Power Apps no da de otra forma.
+
+---
+
+## PARTE 3 · Tabla 1 — por período
+
+### Encabezados — `conTh1` (contenedor horizontal, `Height: 32`, `Fill: RGBA(13; 50; 61; 1)`)
+
+Ocho etiquetas, todas con `Color: RGBA(255; 255; 255; 1)`, `Size: 9`, `FontWeight: FontWeight.Bold`, `Align: Align.Center`, `FillPortions: 1`:
+
+```powerfx
+// lblTh1Periodo.Text  ->  frEncPeriodo
+// lblTh1Bomb.Text     ->  "BOMBEADA m³"
+// lblTh1Clar.Text     ->  "CLARIFICADA m³"
+// lblTh1Cons.Text     ->  "CONSUMIDA m³"
+// lblTh1Bal.Text      ->  "BALANCE m³"
+// lblTh1Porc.Text     ->  "% CONS / BOMB"
+// lblTh1Orig.Text     ->  "ORIGEN DEL DATO"
+```
+
+El primero cambia solo de DÍA a SEMANA a MES según el botón. Eso es lo que hace que la tabla se sienta viva.
+
+### Galería `galAnaTabla` (vertical, `TemplateSize: 34`, `Width: Parent.Width`)
+
+```powerfx
+// Items
+frTabla
+```
+
+Dentro, contenedor horizontal `conFila1` (`Height: 34`, `Width: Parent.TemplateWidth`, `LayoutAlignItems: LayoutAlignItems.Center`):
+
+```powerfx
+// conFila1.Fill
+If(Mod(ThisItem.Indice; 2) = 0; RGBA(248; 250; 252; 1); RGBA(255; 255; 255; 1))
+```
+
+Etiquetas de la fila, todas `FillPortions: 1`, `Align: Align.Center`, `Size: 10`:
+
+```powerfx
+// lblTb1Periodo.Text   ->  ThisItem.Etiqueta          (FontWeight.Semibold, Align.Start)
+// lblTb1Bomb.Text      ->  Text(ThisItem.Bombeada;    "#.##0,00"; "es-ES")
+// lblTb1Clar.Text      ->  Text(ThisItem.Clarificada; "#.##0,00"; "es-ES")
+// lblTb1Cons.Text      ->  Text(ThisItem.Consumida;   "#.##0,00"; "es-ES")
+// lblTb1Bal.Text       ->  Text(ThisItem.Balance;     "#.##0,00"; "es-ES")
+// lblTb1Porc.Text      ->  Text(ThisItem.PorcCons;    "0,0%";     "es-ES")
+
+// lblTb1Bal.Color
+If(ThisItem.Balance < 0; RGBA(220; 38; 38; 1); RGBA(51; 65; 85; 1))
+
+// lblTb1Orig.Text
+If(ThisItem.Lecturas > 0; ThisItem.Lecturas & " lectura(s)"; "prorrateado")
+
+// lblTb1Orig.Color
+If(ThisItem.Lecturas > 0; RGBA(22; 101; 52; 1); RGBA(7; 89; 133; 1))
+```
+
+### Pie de totales — `conTot1` (fuera de la galería, `Fill: RGBA(241; 245; 249; 1)`)
+
+```powerfx
+// lblTot1Periodo.Text ->  "TOTAL  (" & CountRows(frTabla) & " " & Lower(frEncPeriodo) & ")"
+// lblTot1Bomb.Text    ->  Text(frBombeada;    "#.##0,00"; "es-ES")
+// lblTot1Clar.Text    ->  Text(frClarificada; "#.##0,00"; "es-ES")
+// lblTot1Cons.Text    ->  Text(frConsumida;   "#.##0,00"; "es-ES")
+// lblTot1Bal.Text     ->  Text(frBombeada - frConsumida; "#.##0,00"; "es-ES")
+// lblTot1Porc.Text    ->  Text(If(frBombeada > 0; frConsumida / frBombeada; 0); "0,0%"; "es-ES")
+// lblTot1Orig.Text    ->  frLecturas & " lecturas"
+```
+
+---
+
+## PARTE 4 · Tabla 2 — por sistema y contador
+
+Es la que pediste: **Sistema · Contador · Tipo · m³**, más las columnas que le dan sentido.
+
+### Encabezados — `conTh2`
+
+```powerfx
+// lblTh2Sistema.Text  ->  "SISTEMA"
+// lblTh2Contador.Text ->  "CONTADOR"
+// lblTh2Tipo.Text     ->  "TIPO"
+// lblTh2Total.Text    ->  "TOTAL m³"
+// lblTh2Prom.Text     ->  frTituloGran            <- cambia con el botón
+// lblTh2Porc.Text     ->  "% DEL TIPO"
+// lblTh2Lect.Text     ->  "LECTURAS"
+```
+
+`frTituloGran` es lo que hace dinámica esta tabla: el encabezado pasa de **PROM. MES** a **PROM. SEMANA** a **PROM. DÍA** a **PROM. HORA**, y la columna se recalcula sola.
+
+### Galería `galAnaEquipos` (vertical, `TemplateSize: 34`)
+
+```powerfx
+// Items
+frTablaEquipo
+```
+
+Contenedor horizontal `conFila2` con una barrita de color al inicio:
+
+```powerfx
+// conFila2.Fill
+If(Mod(ThisItem.Indice; 2) = 0; RGBA(248; 250; 252; 1); RGBA(255; 255; 255; 1))
+
+// recColorTipo  (Rectangle, Width: 4, Height: 24)
+// Fill  ->  ColorValue(ThisItem.ColorHex)
+```
+
+Etiquetas:
+
+```powerfx
+// lblTb2Sistema.Text   ->  ThisItem.Sistema
+// lblTb2Contador.Text  ->  ThisItem.Contador & " — " & ThisItem.Nombre
+// lblTb2Tipo.Text      ->  ThisItem.Tipo
+
+// lblTb2Tipo.Color
+ColorValue(ThisItem.ColorHex)
+
+// lblTb2Total.Text     ->  Text(ThisItem.Total; "#.##0,00"; "es-ES")
+// lblTb2Prom.Text      ->  Text(ThisItem.Promedio; frFormatoGran; "es-ES")
+// lblTb2Porc.Text      ->  Text(ThisItem.PorcGrupo; "0,0%"; "es-ES")
+
+// lblTb2Lect.Text
+ThisItem.Lecturas & " / " & ThisItem.DiasDato & " días"
+
+// lblTb2Total.Color — apaga los contadores sin movimiento en el rango
+If(ThisItem.Total > 0; RGBA(15; 23; 42; 1); RGBA(148; 163; 184; 1))
+```
+
+### Separadores por tipo
+
+Para que se vean los tres bloques (Bombeada, Clarificada, Consumida) sin escribir tres galerías, usa una etiqueta que solo aparece en el primer renglón de cada tipo:
+
+```powerfx
+// lblSepTipo.Text
+ThisItem.Tipo
+
+// lblSepTipo.Visible
+ThisItem.Indice = 1 Or
+Last(FirstN(frTablaEquipo; ThisItem.Indice - 1)).Tipo <> ThisItem.Tipo
+
+// lblSepTipo.Fill  ->  RGBA(226; 232; 240; 1)
+// lblSepTipo.Height ->  22
+```
+
+Ponla dentro de la galería, **arriba** del contenedor de la fila, en un contenedor vertical. Y sube `TemplateSize` a `58` para que quepan las dos cosas cuando el separador esté visible.
+
+### Pie de la tabla 2
+
+```powerfx
+// lblTot2.Text
+"TOTAL  ·  Bombeada " & Text(frBombeada; "#.##0,00"; "es-ES") &
+"  ·  Clarificada " & Text(frClarificada; "#.##0,00"; "es-ES") &
+"  ·  Consumida " & Text(frConsumida; "#.##0,00"; "es-ES") & " m³"
+```
+
+---
+
+## PARTE 5 · Opcional — la tabla 2 como matriz de períodos
+
+Si además quieres ver **cada contador contra cada período** (contadores en filas, meses o semanas en columnas), se hace con una galería dentro de otra.
+
+En `galAnaEquipos`, junto a las etiquetas fijas, mete una **galería horizontal** `galPeriodosEq`:
+
+```powerfx
+// galPeriodosEq.Items  — ThisItem aquí es el renglón del contador
+ForAll(
+    Sequence(CountRows(frClaves)) As I;
+    With(
+        { _k: Last(FirstN(frClaves; I.Value)).Value };
+        {
+            Etiqueta: Switch(
+                varGranularidad;
+                "Dia";    Text(_k; "dd/mm"; "es-ES");
+                "Semana"; Text(_k; "dd/mm"; "es-ES");
+                Text(_k; "mmm"; "es-ES")
+            );
+            M3: Switch(
+                varGranularidad;
+                "Dia";    Sum(Filter(frDias; Equipo = ThisItem.Contador; Fecha = _k); M3Dia);
+                "Semana"; Sum(Filter(frDias; Equipo = ThisItem.Contador; IniSemana = _k); M3Dia);
+                Sum(Filter(frDias; Equipo = ThisItem.Contador; IniMes = _k); M3Dia)
+            )
+        }
+    )
+)
+```
+
+Dentro, una sola etiqueta:
+```powerfx
+// lblCelda.Text  ->  Text(ThisItem.M3; "#.##0"; "es-ES")
+// lblCelda.Fill  ->  ColorFade(RGBA(37; 
