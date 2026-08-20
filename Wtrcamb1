@@ -1,0 +1,199 @@
+# Cambios para filtrar por sistema
+### Solo lo que hay que agregar o modificar
+
+---
+
+## 1 · Variable nueva
+
+En `App.OnStart`, en el bloque 7 (estado inicial), agrega una línea:
+
+```powerfx
+Set(varSisSel; "Todos")
+```
+
+Y justo después de `ClearCollect(colGrupos; ...)`, agrega la lista de sistemas. Se arma sola desde el catálogo, así que si mañana das de alta un sistema nuevo aparece el botón solo:
+
+```powerfx
+ClearCollect(colSistemas; {Sistema: "Todos"; Orden: 0});;
+Collect(
+    colSistemas;
+    ForAll(
+        Sort(Distinct(Filter(colGrupos; Grupo <> "Excluir"); Sistema); Value; SortOrder.Ascending) As S;
+        {Sistema: S.Value; Orden: 1}
+    )
+);;
+```
+
+---
+
+## 2 · Galería de botones de sistema — `galAnaSistemas`
+
+Va **debajo de la galería de meses**, en la fila de controles. Galería horizontal:
+
+| Propiedad | Valor |
+|---|---|
+| `Items` | `colSistemas` |
+| `Height` | `40` |
+| `TemplateSize` | `140` |
+| `WrapCount` | `6` |
+| `ShowScrollbar` | `false` |
+| `FillPortions` | `0` |
+
+Dentro, un contenedor y un `Classic/Button` llamado `btnAnaSistema`:
+
+```powerfx
+// Text
+ThisItem.Sistema
+
+// Fill
+If(varSisSel = ThisItem.Sistema; RGBA(37; 99; 235; 1); RGBA(241; 245; 249; 1))
+
+// Color
+If(varSisSel = ThisItem.Sistema; RGBA(255; 255; 255; 1); RGBA(71; 85; 105; 1))
+
+// OnSelect
+Set(varSisSel; ThisItem.Sistema)
+```
+
+Nada más. No hay que resetear ni recalcular: al cambiar `varSisSel` se recalcula `frDias`, y de ahí en adelante todo lo demás.
+
+---
+
+## 3 · `frDias` — la única fórmula que hay que tocar
+
+```powerfx
+frDias =
+Filter(
+    colDias;
+    Fecha >= varAnaIni;
+    Fecha <= varAnaFin;
+    varSisSel = "Todos" Or Sistema = varSisSel
+);
+```
+
+**Con este cambio quedan filtrados automáticamente:** las tres tarjetas, el balance, los tres gráficos circulares, la tabla 1 y la tabla 2. Todos leen de `frDias`.
+
+---
+
+## 4 · El porcentaje por Sistema + Tipo
+
+Tienes razón, estaba mal: el `%` se calculaba contra el total del tipo en toda la estación. Debe ser contra el total de **ese tipo dentro de ese sistema**.
+
+En `frTablaEquipo`, reemplaza el bloque `_grp` por esto:
+
+```powerfx
+                {
+                    _t: Sum(_sub; M3Dia);
+                    _grp: Sum(Filter(frDias; Sistema = _g.Sistema; Grupo = _g.Grupo); M3Dia)
+                };
+```
+
+Con eso, en tus datos actuales los denominadores quedan así:
+
+| Sistema | Tipo | Total | Quiénes reparten |
+|---|---|---|---|
+| A - Principal | Bombeada | 21.295 m³ | CONT01 y CONT02 se reparten el 100 % |
+| A - Principal | Clarificada | 31.972 m³ | CONT03 y CONT05 |
+| A - Principal | Consumida | 20.011 m³ | RD, CNP y Servicios |
+| A - Principal | Otros | 1.273 m³ | P. Mayores, **100 %** |
+| B - Campo Abierto | Bombeada | 2.883 m³ | Presa, **100 %** |
+| B - Campo Abierto | Otros | 1.103 m³ | Riego Campo Abierto, **100 %** |
+| C - Pozo | Bombeada | 81 m³ | Pozo, **100 %** |
+| D - Áreas Verdes | Bombeada | 775 m³ | Áreas Verdes, **100 %** |
+
+Exactamente lo que pediste: donde solo hay un contador, marca 100 %.
+
+Y cambia el encabezado de esa columna:
+```powerfx
+// lblTh2Porc.Text
+"% DEL TIPO EN SU SISTEMA"
+```
+
+---
+
+## 5 · Solo mostrar los contadores del sistema activo
+
+En `frTablaEquipo`, las dos líneas donde aparece `Filter(colGrupos; Grupo <> "Excluir")` llevan una condición más. **Ojo: tiene que ser el mismo filtro en las dos**, si no, los renglones se desalinean.
+
+```powerfx
+frTablaEquipo =
+ForAll(
+    Sequence(
+        CountRows(
+            Filter(colGrupos; Grupo <> "Excluir"; varSisSel = "Todos" Or Sistema = varSisSel)
+        )
+    ) As I;
+    With(
+        {
+            _g: Last(
+                FirstN(
+                    Sort(
+                        Filter(colGrupos; Grupo <> "Excluir"; varSisSel = "Todos" Or Sistema = varSisSel);
+                        Orden;
+                        SortOrder.Ascending
+                    );
+                    I.Value
+                )
+            )
+        };
+        ...
+```
+
+El resto de la fórmula queda igual.
+
+---
+
+## 6 · Detalles opcionales
+
+**Los tres gráficos circulares**, para que no dibujen porciones en cero cuando filtras un sistema. En los tres, agrega la condición al `Filter(colGrupos; ...)`:
+
+```powerfx
+Sort(
+    Filter(colGrupos; Grupo = "Bombeada"; varSisSel = "Todos" Or Sistema = varSisSel);
+    Orden;
+    SortOrder.Ascending
+) As G
+```
+
+**Los botones de mes**, para que se apaguen los meses sin datos en el sistema activo:
+
+```powerfx
+// btnAnaMes.DisplayMode
+If(
+    ThisItem.N = 0 Or
+    CountRows(
+        Filter(colDias; Anio = varAnaAnio; NumMes = ThisItem.N; varSisSel = "Todos" Or Sistema = varSisSel)
+    ) > 0;
+    DisplayMode.Edit;
+    DisplayMode.Disabled
+)
+```
+
+**La etiqueta del rango activo**, para que siempre se sepa qué se está viendo:
+
+```powerfx
+// lblAnaRango.Text
+If(varMesSel = 0; "Todo " & varAnaAnio;
+   If(varMesSel = -1; "Rango libre"; Text(varAnaIni; "mmmm yyyy"; "es-ES")))
+& "  ·  " & frNumDias & " días"
+& "  ·  " & If(varSisSel = "Todos"; "todos los sistemas"; varSisSel)
+& "  ·  agrupado " & frTextoGran
+```
+
+---
+
+## 7 · Una observación que va a saltar al filtrar
+
+Al seleccionar **A - Principal** vas a ver esto:
+
+```
+Bombeada     21.295 m³
+Clarificada  31.972 m³   ← 50 % más de lo que entró
+Consumida    20.011 m³
+```
+
+Ese sistema es cerrado: el agua que sale de los clarificadores tiene que venir del bombeo principal y auxiliar. Que la clarificada supere a la bombeada en 10.677 m³ confirma lo que te comenté de CONT05, y ahora el filtro por sistema lo deja aislado y sin discusión: no es que otro sistema esté aportando, es ese contador.
+
+Los otros tres sistemas cuadran bien. El de Campo Abierto bombea 2.883 y riega 1.103, que es un residual razonable de red abierta.
+
+El prototipo HTML ya trae los botones de sistema y el porcentaje corregido, para que compares antes de armarlo.
